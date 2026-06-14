@@ -1,0 +1,827 @@
+{% extends "base.html" %}
+{% block title %}Your Profile — Job Search Assistant{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold">Your Profile</h1>
+  <span id="saveState" class="text-sm text-gray-500 dark:text-gray-400"></span>
+</div>
+
+<div id="noticeBar" class="hidden mb-4 p-3 rounded-xl bg-amber-100 dark:bg-amber-900 text-amber-900 dark:text-amber-100 text-sm"></div>
+
+<!-- ============ Section A: Resume & Profile Intelligence Hub ============ -->
+<section class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4 sm:p-6 mb-5">
+  <h2 class="text-lg font-bold mb-3">📄 Resume &amp; Profile Intelligence Hub</h2>
+
+  <div class="flex flex-col sm:flex-row gap-5">
+    <div class="flex flex-col items-center justify-center shrink-0">
+      <div class="relative w-28 h-28">
+        <svg viewBox="0 0 36 36" class="w-28 h-28 -rotate-90">
+          <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" stroke-width="3.5"></circle>
+          <circle id="strengthArc" cx="18" cy="18" r="15.9" fill="none" stroke="#4f46e5" stroke-width="3.5"
+                  stroke-dasharray="0 100" stroke-linecap="round"></circle>
+        </svg>
+        <div class="absolute inset-0 flex flex-col items-center justify-center">
+          <span id="strengthNum" class="text-2xl font-bold">–</span>
+          <span class="text-[10px] text-gray-500 dark:text-gray-400">STRENGTH</span>
+        </div>
+      </div>
+      <p id="strengthSummary" class="text-xs text-gray-500 dark:text-gray-400 text-center mt-2 max-w-[180px]"></p>
+    </div>
+
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="font-semibold">Your resumes <span class="text-sm font-normal text-gray-500">(max 3)</span></h3>
+      </div>
+      <div id="resumeList" class="space-y-2"></div>
+      <div class="mt-3 flex flex-col sm:flex-row gap-2">
+        <input type="file" id="resumeFile" accept=".pdf,.docx" class="hidden" onchange="uploadResume()">
+        <button id="uploadBtn" onclick="document.getElementById('resumeFile').click()"
+                class="tap bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-4 py-2 font-medium">
+          ⬆️ Upload New Resume
+        </button>
+        <button onclick="adviceNow()" class="tap bg-violet-600 hover:bg-violet-700 text-white rounded-xl px-4 py-2 font-medium">
+          ✨ Give Me Advice Now
+        </button>
+      </div>
+      <p id="maxNote" class="hidden text-xs text-amber-600 mt-1">Maximum 3 resumes. Delete one to upload another.</p>
+      <label class="flex items-center gap-2 mt-3 text-sm tap">
+        <input type="checkbox" id="resume_advice_enabled" onchange="saveField('resume_advice_enabled', this.checked)">
+        Give me resume advice and tips every time I upload a resume
+      </label>
+    </div>
+  </div>
+
+  <!-- LinkedIn -->
+  <div class="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
+    <h3 class="font-semibold mb-1">🔗 LinkedIn Profile</h3>
+    <p id="liPrompt" class="text-sm text-gray-500 dark:text-gray-400 mb-2">Add your LinkedIn URL to get optimization tips that help recruiters find you.</p>
+    <div class="flex flex-col sm:flex-row gap-2">
+      <input id="linkedin_url" placeholder="https://linkedin.com/in/yourprofile"
+             class="tap flex-1 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2"
+             onchange="saveField('linkedin_url', this.value)">
+      <button onclick="analyzeLinkedIn()" class="tap bg-sky-600 hover:bg-sky-700 text-white rounded-xl px-4 py-2 font-medium">Analyze My LinkedIn</button>
+    </div>
+    <div id="liResult" class="mt-3 text-sm"></div>
+  </div>
+
+  <!-- Portfolio -->
+  <div class="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
+    <h3 class="font-semibold mb-1">🖼️ Portfolio</h3>
+    <div class="flex flex-col sm:flex-row gap-2">
+      <input id="portfolio_url" placeholder="https://yourportfolio.com"
+             class="tap flex-1 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2"
+             onchange="saveField('portfolio_url', this.value)">
+      <button onclick="validatePortfolio()" class="tap bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl px-4 py-2 font-medium">Validate Link</button>
+      <button onclick="analyzePortfolio()" class="tap bg-sky-600 hover:bg-sky-700 text-white rounded-xl px-4 py-2 font-medium">Analyze My Portfolio</button>
+    </div>
+    <div id="pfResult" class="mt-3 text-sm"></div>
+  </div>
+
+  <!-- Skills gap + certs -->
+  <div class="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
+    <h3 class="font-semibold mb-1">🧩 Skills Gap Summary</h3>
+    <p id="gapSummary" class="text-sm text-gray-600 dark:text-gray-300"></p>
+    <div id="certCards" class="mt-3 space-y-3"></div>
+  </div>
+
+  <!-- Parsed data -->
+  <div class="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4">
+    <h3 class="font-semibold mb-2">🗂️ Parsed Resume Data</h3>
+    <div class="grid sm:grid-cols-2 gap-3 text-sm">
+      <div><span class="text-gray-500">Name:</span> <span id="pName"></span></div>
+      <div><span class="text-gray-500">Email:</span> <span id="pEmail"></span></div>
+      <div><span class="text-gray-500">Location:</span> <span id="pLoc"></span></div>
+      <div><span class="text-gray-500">Experience level:</span> <span id="pLevel" class="inline-block bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200 rounded-full px-2 py-0.5 text-xs font-semibold"></span></div>
+    </div>
+    <div class="mt-2"><span class="text-gray-500 text-sm">Skills:</span> <span id="pSkills" class="inline"></span></div>
+    <div id="pHistory" class="mt-2 text-sm"></div>
+  </div>
+</section>
+
+<!-- ============ Section B: Bio & Preferences ============ -->
+<section class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4 sm:p-6 mb-5">
+  <h2 class="text-lg font-bold mb-3">⚙️ Bio &amp; Preferences</h2>
+
+  <label class="block text-sm font-medium mb-1">Bio / About Me</label>
+  <textarea id="bio" rows="4" onchange="saveField('bio', this.value)"
+    class="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2"
+    placeholder="Describe what kind of jobs you're looking for, any additional context about your career goals, industries you're interested in, physical accommodations you may need, etc."></textarea>
+
+  <div class="grid sm:grid-cols-2 gap-4 mt-4">
+    <div>
+      <label class="block text-sm font-medium mb-1">Preferred Salary/Hourly Wage</label>
+      <input id="preferred_salary" placeholder="e.g., $80,000/year or $40/hour — your ideal target"
+        onchange="saveField('preferred_salary', this.value)"
+        class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2">
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Minimum Salary/Hourly Wage</label>
+      <input id="minimum_salary" placeholder="e.g., $60,000/year or $30/hour — your absolute floor"
+        onchange="saveField('minimum_salary', this.value)"
+        class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2">
+    </div>
+  </div>
+  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">We'll prioritize jobs near your preferred rate. Jobs below your minimum will be excluded (except those with no listed compensation).</p>
+
+  <div class="grid sm:grid-cols-2 gap-4 mt-4">
+    <div>
+      <label class="block text-sm font-medium mb-1">Preferred Positions/Titles</label>
+      <input id="preferred_positions" placeholder="e.g., Software Engineer, Data Analyst, Project Manager"
+        onchange="saveField('preferred_positions', this.value)"
+        class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2">
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Additional Skills/Experience</label>
+      <input id="additional_skills" placeholder="List any skills or experience not on your resume"
+        onchange="saveField('additional_skills', this.value)"
+        class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2">
+    </div>
+  </div>
+
+  <div class="grid sm:grid-cols-2 gap-4 mt-4">
+    <div>
+      <label class="block text-sm font-medium mb-1">Search Keywords</label>
+      <div id="tag_search_keywords"></div>
+      <p class="text-xs text-gray-500 mt-1">Add keywords like "Python", "forklift certified", "bilingual Spanish"…</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Negative Keywords (exclude)</label>
+      <div id="tag_negative_keywords"></div>
+      <p class="text-xs text-gray-500 mt-1">Add terms to exclude like "commission only", "unpaid internship", "1099"…</p>
+    </div>
+  </div>
+
+  <div class="mt-4">
+    <label class="block text-sm font-medium mb-1">Industry / Category Preferences</label>
+    <div id="industryPills" class="flex flex-wrap gap-2"></div>
+    <p class="text-xs text-gray-500 mt-1">Select industries you're interested in. This works alongside your skills to nudge results — it won't replace skills-based matching.</p>
+  </div>
+
+  <div class="mt-4">
+    <label class="block text-sm font-medium mb-2">Job Type Preferences</label>
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2" id="jobTypes"></div>
+    <p class="text-xs text-amber-600 dark:text-amber-400 mt-1">Contract positions will only be shown if the Contract box is checked.</p>
+  </div>
+
+  <div class="mt-5">
+    <label class="block text-sm font-medium mb-2">Commute / Distance Preferences</label>
+    <div class="flex flex-col sm:flex-row gap-3">
+      <label class="tap flex items-center gap-2 text-sm"><input type="radio" name="commuteMode" value="radius" onchange="setCommuteMode('radius')"> Simple Radius</label>
+      <label class="tap flex items-center gap-2 text-sm"><input type="radio" name="commuteMode" value="time" onchange="setCommuteMode('driving')"> Commute Time</label>
+    </div>
+    <div id="radiusBox" class="mt-2">
+      <label class="text-sm">Search radius (miles): <span id="radiusVal" class="font-semibold"></span></label>
+      <input type="range" min="5" max="50" step="5" id="search_radius_miles" class="w-full"
+             oninput="document.getElementById('radiusVal').textContent=this.value"
+             onchange="saveField('search_radius_miles', parseInt(this.value))">
+    </div>
+    <div id="commuteBox" class="mt-2 hidden space-y-2">
+      <div>
+        <label class="text-sm">Max commute time (minutes): <span id="commuteVal" class="font-semibold"></span></label>
+        <input type="range" min="10" max="90" step="5" id="commute_max_minutes" class="w-full"
+               oninput="document.getElementById('commuteVal').textContent=this.value"
+               onchange="saveField('commute_max_minutes', parseInt(this.value))">
+      </div>
+      <div class="grid sm:grid-cols-2 gap-2">
+        <select id="commute_mode" onchange="saveField('commute_mode', this.value)"
+                class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2">
+          <option value="driving">Driving</option><option value="transit">Public Transit</option>
+          <option value="walking">Walking</option><option value="biking">Biking</option>
+        </select>
+        <input id="home_address" placeholder="Enter your home address for accurate commute calculations"
+               onchange="saveField('home_address', this.value)"
+               class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2">
+      </div>
+    </div>
+    <p class="text-xs text-gray-500 mt-1">Commute time uses real-world routing (Google Maps) for an 8 AM arrival; simple radius is the fallback. Both apply to on-site, hybrid and local jobs. Remote searches cover all 50 states when "Remote" is checked above.</p>
+  </div>
+
+  <div class="mt-5">
+    <label class="block text-sm font-medium mb-1">Benefits That Matter to You</label>
+    <p class="text-xs text-gray-500 mb-2">Select benefits you care about. We'll prioritize jobs that offer these and highlight them in your emails.</p>
+    <div id="benefitPills" class="flex flex-wrap gap-2"></div>
+  </div>
+
+  <div class="mt-5 space-y-2">
+    <label class="block text-sm font-medium">Exclusion Filters</label>
+    <label class="tap flex items-start gap-2 text-sm">
+      <input type="checkbox" id="exclude_drug_testing" onchange="saveField('exclude_drug_testing', this.checked)">
+      <span><strong>Exclude jobs requiring drug testing or drug screening</strong><br>
+      <span class="text-xs text-gray-500">Filters out listings that mention pre-employment, at-hire, or random drug testing/screening.</span></span>
+    </label>
+    <label class="tap flex items-start gap-2 text-sm">
+      <input type="checkbox" id="exclude_criminal_record_filter" onchange="saveField('exclude_criminal_record_filter', this.checked)">
+      <span><strong>Exclude jobs that won't hire people with a criminal record</strong><br>
+      <span class="text-xs text-gray-500">Filters out listings that mention background check disqualifiers for criminal history.</span></span>
+    </label>
+  </div>
+
+  <div class="mt-5">
+    <label class="block text-sm font-medium mb-1">Search Feedback / Notes</label>
+    <textarea id="feedback_notes" rows="3" onchange="saveField('feedback_notes', this.value)"
+      class="w-full rounded-xl border-2 border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-gray-700 px-3 py-2"
+      placeholder="After receiving job emails, use this space to refine your preferences. Example: 'I want more remote Python jobs' or 'No more marketing roles' or 'Focus on startups under 50 employees'. This feedback directly influences your next job search."></textarea>
+  </div>
+</section>
+
+<!-- ============ Section C: Company Lists & Email Preferences ============ -->
+<section class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4 sm:p-6 mb-5">
+  <h2 class="text-lg font-bold mb-3">🏢 Company Lists &amp; Email Preferences</h2>
+  <div class="grid sm:grid-cols-2 gap-4">
+    <div>
+      <label class="block text-sm font-medium mb-1">Companies to Never Show</label>
+      <div id="tag_blacklisted_companies"></div>
+      <p class="text-xs text-gray-500 mt-1">Add companies you don't want to see (former employers, bad experiences, etc.)</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium mb-1">Dream Companies</label>
+      <div id="tag_whitelisted_companies"></div>
+      <p class="text-xs text-gray-500 mt-1">Add companies you'd love to work for — their jobs get a big priority boost.</p>
+    </div>
+  </div>
+
+  <div class="mt-5">
+    <label class="block text-sm font-medium mb-2">Email Frequency <span class="font-normal text-xs text-gray-500">— how often would you like job match emails?</span></label>
+    <div class="flex flex-col sm:flex-row gap-2" id="freqGroup">
+      <label class="tap flex items-center gap-2 text-sm"><input type="radio" name="freq" value="daily" onchange="saveField('email_frequency','daily')"> Daily</label>
+      <label class="tap flex items-center gap-2 text-sm"><input type="radio" name="freq" value="every_3_days" onchange="saveField('email_frequency','every_3_days')"> Every 3 Days</label>
+      <label class="tap flex items-center gap-2 text-sm"><input type="radio" name="freq" value="weekly" onchange="saveField('email_frequency','weekly')"> Weekly</label>
+    </div>
+  </div>
+
+  <label class="tap flex items-start gap-2 text-sm mt-4">
+    <input type="checkbox" id="urgency_alerts_enabled" onchange="saveField('urgency_alerts_enabled', this.checked)">
+    <span><strong>Send me immediate alerts for urgent near-perfect matches</strong><br>
+    <span class="text-xs text-gray-500">If a near-perfect, urgent match (immediate start, deadline approaching…) appears between your regular emails, we'll send a heads-up right away.</span></span>
+  </label>
+
+  <div class="mt-5">
+    <h3 class="font-semibold text-sm mb-2">Choose exactly which emails you receive</h3>
+    <div id="emailPrefs" class="space-y-2"></div>
+  </div>
+</section>
+
+<!-- ============ Section D: Goals ============ -->
+<section class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4 sm:p-6 mb-5">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-lg font-bold">🎯 Goals</h2>
+    <button onclick="toggleGoalForm()" class="tap bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-4 py-2 text-sm font-medium">+ Set a New Goal</button>
+  </div>
+  <div id="goalForm" class="hidden mb-4 p-3 rounded-xl bg-gray-50 dark:bg-gray-700 grid sm:grid-cols-4 gap-2">
+    <select id="goalType" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2">
+      <option value="applications">Apply to X jobs</option>
+      <option value="interviews">Get X interviews</option>
+      <option value="offers">Receive X offers</option>
+    </select>
+    <input id="goalTarget" type="number" inputmode="numeric" min="1" value="10"
+           class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2">
+    <select id="goalPeriod" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2">
+      <option value="weekly">This week</option><option value="monthly">This month</option>
+    </select>
+    <button onclick="createGoal()" class="tap bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl px-4 py-2 font-medium">Create</button>
+  </div>
+  <div id="goalList" class="space-y-3"></div>
+</section>
+
+<!-- ============ Danger zone ============ -->
+<section class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4 sm:p-6 mb-8 border border-rose-200 dark:border-rose-900">
+  <h2 class="text-lg font-bold text-rose-600 mb-2">Delete My Account</h2>
+  <p class="text-sm text-gray-600 dark:text-gray-300 mb-3">Permanently removes ALL your data: resumes, job history, preferences, analyses — everything. This cannot be undone.</p>
+  <button onclick="openDeleteModal()" class="tap bg-rose-600 hover:bg-rose-700 text-white rounded-xl px-4 py-2 font-medium">Delete My Account</button>
+</section>
+
+<!-- Resume preview modal -->
+<div id="previewModal" class="hidden fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-2 sm:p-6"
+     onclick="if (event.target === this) closePreview()">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-5xl h-[92vh] flex flex-col overflow-hidden">
+    <div class="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700">
+      <strong id="previewTitle" class="truncate text-sm sm:text-base">Resume</strong>
+      <div class="flex items-center gap-1 shrink-0">
+        <button id="zoomOutBtn" class="tap hidden px-3 rounded-lg bg-gray-100 dark:bg-gray-700 font-bold" title="Zoom out">−</button>
+        <button id="zoomInBtn" class="tap hidden px-3 rounded-lg bg-gray-100 dark:bg-gray-700 font-bold" title="Zoom in">+</button>
+        <a id="previewOpenTab" target="_blank" class="tap px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-700 text-sm" title="Open original in a new tab">↗</a>
+        <button onclick="closePreview()" class="tap px-3 text-2xl leading-none" title="Close">×</button>
+      </div>
+    </div>
+    <div id="previewBody" class="flex-1 overflow-auto bg-gray-300 dark:bg-gray-900"></div>
+  </div>
+</div>
+
+<div id="deleteModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 max-w-md w-full">
+    <h3 class="font-bold text-lg mb-2">Are you sure?</h3>
+    <p class="text-sm mb-3">This will permanently delete ALL your data including your resume, job history, preferences, and remove you from the automation. <strong>This action cannot be undone.</strong></p>
+    <p class="text-sm mb-2">Type <strong>DELETE</strong> to confirm:</p>
+    <input id="deleteConfirm" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-3" placeholder="DELETE">
+    <div class="flex gap-2 justify-end">
+      <button onclick="document.getElementById('deleteModal').classList.add('hidden')" class="tap px-4 py-2 rounded-xl bg-gray-200 dark:bg-gray-700">Cancel</button>
+      <button onclick="confirmDelete()" class="tap px-4 py-2 rounded-xl bg-rose-600 text-white font-medium">Delete everything</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const INDUSTRIES = ["Healthcare","Construction","Technology","Retail","Food Service","Logistics / Warehousing",
+  "Manufacturing","Finance / Banking","Education","Government","Nonprofit","Legal","Marketing / Advertising",
+  "Real Estate","Hospitality / Tourism","Energy / Utilities","Transportation","Agriculture","Entertainment / Media","Other"];
+const BENEFITS = [["health_insurance","Health Insurance"],["401k","401k / Retirement Match"],["pto","PTO / Vacation Days"],
+  ["remote_flexibility","Remote Flexibility"],["tuition_reimbursement","Tuition Reimbursement"],
+  ["dental_vision","Dental / Vision Insurance"],["parental_leave","Parental Leave"],
+  ["professional_development","Professional Development Budget"],["stock_options","Stock Options / Equity"]];
+const JOB_TYPES = [["job_type_fulltime","Full-time"],["job_type_parttime","Part-time"],["job_type_contract","Contract"],
+  ["job_type_remote","Remote"],["job_type_hybrid","Hybrid"],["job_type_onsite","On-site"]];
+const EMAIL_PREFS = [
+  ["email_pref_job_listings","Job listings emails","Your regular job match emails on your chosen cadence."],
+  ["email_pref_resume_advice","Resume advice","Tips to improve your resume — first-email advice, upload advice, 'Give Me Advice Now' emails."],
+  ["email_pref_progress_summaries","Progress summaries","Per-cycle summaries of your application progress inside job emails."],
+  ["email_pref_urgency_alerts","Urgency alerts","Immediate alerts for time-sensitive, near-perfect matches between cycles."],
+  ["email_pref_interview_prep","Interview prep materials","Customized interview preparation and mock interview reports."],
+  ["email_pref_cert_recommendations","Certification/course recommendations","Courses and certifications to close skill gaps."],
+  ["email_pref_linkedin_tips","LinkedIn optimization tips","Suggestions to improve your LinkedIn profile."],
+  ["email_pref_goal_milestones","Goal milestone celebrations","Congratulations when you hit your goals."],
+  ["email_pref_system_notifications","System/account notifications","Account notifications, portfolio alerts, deletion confirmation."]];
+
+let P = null;
+const saveState = document.getElementById('saveState');
+
+async function saveField(field, value) {
+  saveState.textContent = 'Saving…';
+  try {
+    await api('/api/profile', { method: 'PUT', body: { [field]: value } });
+    saveState.textContent = '✓ Saved';
+    setTimeout(() => saveState.textContent = '', 2000);
+  } catch (e) { saveState.textContent = ''; toast(e.message, 'err'); }
+}
+
+function tagInput(containerId, field, values) {
+  const box = document.getElementById(containerId);
+  box.innerHTML = '';
+  box.className = 'flex flex-wrap gap-1.5 items-center rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1.5 min-h-[44px]';
+  const tags = [...values];
+  const render = () => {
+    box.querySelectorAll('.tagchip').forEach(c => c.remove());
+    const input = box.querySelector('input');
+    tags.forEach((t, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'tagchip bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-100 rounded-full px-2.5 py-1 text-sm flex items-center gap-1';
+      chip.innerHTML = esc(t) + ' <button class="tap !min-h-0 !min-w-0 font-bold px-1" aria-label="remove">×</button>';
+      chip.querySelector('button').onclick = () => { tags.splice(i, 1); render(); saveField(field, tags); };
+      box.insertBefore(chip, input);
+    });
+  };
+  const input = document.createElement('input');
+  input.className = 'flex-1 min-w-[110px] bg-transparent outline-none text-sm py-1.5';
+  input.placeholder = 'Type and press Enter…';
+  input.onkeydown = e => {
+    if (e.key === 'Enter' && input.value.trim()) {
+      e.preventDefault();
+      tags.push(input.value.trim()); input.value = '';
+      render(); saveField(field, tags);
+    } else if (e.key === 'Backspace' && !input.value && tags.length) {
+      tags.pop(); render(); saveField(field, tags);
+    }
+  };
+  box.appendChild(input);
+  render();
+}
+
+function pillToggles(containerId, field, options, selected, labelKey) {
+  const box = document.getElementById(containerId);
+  box.innerHTML = '';
+  const sel = new Set(selected);
+  options.forEach(opt => {
+    const [value, label] = Array.isArray(opt) ? opt : [opt, opt];
+    const b = document.createElement('button');
+    const paint = () => b.className = 'tap px-3 py-1.5 rounded-full text-sm border ' +
+      (sel.has(value) ? 'bg-indigo-600 border-indigo-600 text-white' :
+       'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200');
+    paint();
+    b.textContent = label;
+    b.onclick = () => { sel.has(value) ? sel.delete(value) : sel.add(value); paint(); saveField(field, [...sel]); };
+    box.appendChild(b);
+  });
+}
+
+function setCommuteMode(mode) {
+  const isRadius = mode === 'radius';
+  document.getElementById('radiusBox').classList.toggle('hidden', !isRadius);
+  document.getElementById('commuteBox').classList.toggle('hidden', isRadius);
+  saveField('commute_mode', isRadius ? 'radius' : document.getElementById('commute_mode').value);
+}
+
+function renderResumes() {
+  const list = document.getElementById('resumeList');
+  list.innerHTML = '';
+  (P.resumes || []).forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'border border-gray-200 dark:border-gray-700 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-3';
+    const thumbInner =
+      `<div class="thumb-text absolute inset-0 p-1 text-left text-gray-700 overflow-hidden bg-white"
+           data-rid="${r.id}" style="font-size:4px;line-height:5.5px">📄</div>`;
+    div.innerHTML = `
+      <button onclick="openPreview(${r.id})" title="Click to preview this resume"
+              class="group shrink-0 w-16 h-20 sm:w-20 sm:h-24 rounded-lg border border-gray-300 dark:border-gray-600 overflow-hidden relative shadow-sm hover:ring-2 hover:ring-indigo-500 self-center sm:self-auto">
+        ${thumbInner}
+        <span class="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition">
+          <span class="opacity-0 group-hover:opacity-100 text-white text-lg">🔍</span>
+        </span>
+        <span class="absolute bottom-0 right-0 bg-indigo-600 text-white text-[8px] font-bold px-1 rounded-tl">${esc((r.file_type || '').toUpperCase())}</span>
+      </button>
+      <div class="flex-1 min-w-0">
+        <div class="font-medium flex items-center gap-2 flex-wrap">
+          <span contenteditable="true" class="outline-none border-b border-dashed border-gray-300" data-rid="${r.id}">${esc(r.label)}</span>
+          ${r.is_primary ? '<span class="bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200 text-xs rounded-full px-2 py-0.5">Primary</span>' : ''}
+          <span class="bg-gray-100 dark:bg-gray-700 text-xs rounded-full px-2 py-0.5">${esc(r.experience_level || '')}</span>
+        </div>
+        <div class="text-xs text-gray-500 mt-1">Uploaded ${esc((r.created_at || '').slice(0, 10))}</div>
+        <div class="mt-1 flex flex-wrap gap-1">${(r.skills || []).slice(0, 8).map(s =>
+          `<span class="bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-200 text-xs rounded-full px-2 py-0.5">${esc(s)}</span>`).join('')}</div>
+      </div>
+      <div class="flex gap-2 shrink-0">
+        ${r.is_primary ? '' : `<button class="tap text-sm px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700" onclick="setPrimary(${r.id})">Set as Primary</button>`}
+        <button class="tap text-sm px-3 py-1.5 rounded-lg bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200" onclick="armConfirm(this, () => deleteResume(${r.id}))">Delete</button>
+      </div>`;
+    const labelEl = div.querySelector('[contenteditable]');
+    labelEl.addEventListener('blur', () => api(`/api/resumes/${r.id}`, { method: 'PATCH', body: { label: labelEl.textContent.trim() } }).catch(e => toast(e.message, 'err')));
+    list.appendChild(div);
+  });
+  const atMax = (P.resumes || []).length >= 3;
+  document.getElementById('uploadBtn').disabled = atMax;
+  document.getElementById('uploadBtn').classList.toggle('opacity-50', atMax);
+  document.getElementById('maxNote').classList.toggle('hidden', !atMax);
+  // fill DOCX/TXT thumbnails with a miniature of the extracted text
+  document.querySelectorAll('.thumb-text[data-rid]').forEach(async el => {
+    try {
+      const d = await api(`/api/resumes/${el.dataset.rid}/text`);
+      el.textContent = (d.text || '').slice(0, 800);
+    } catch (e) {}
+  });
+}
+
+async function uploadResume() {
+  const fileEl = document.getElementById('resumeFile');
+  if (!fileEl.files.length) return;
+  const file = fileEl.files[0];
+  // default label from the filename; rename inline afterwards (click the label text)
+  const label = (file.name.replace(/\.(pdf|docx|txt)$/i, '').replace(/[_-]+/g, ' ').trim() || 'My Resume').slice(0, 60);
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('label', label);
+  const btn = document.getElementById('uploadBtn');
+  const oldText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Uploading & parsing…';
+  toast('Uploading and parsing resume…');
+  try {
+    const r = await api('/api/resumes/upload', { method: 'POST', body: fd });
+    toast(`Resume uploaded — strength score ${r.strength.score}/100. Click its name to rename it.`);
+    await load();
+  } catch (e) { toast(e.message, 'err'); }
+  btn.disabled = false;
+  btn.innerHTML = oldText;
+  fileEl.value = '';
+}
+async function deleteResume(id) {
+  try { await api(`/api/resumes/${id}`, { method: 'DELETE' }); toast('Resume deleted'); load(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function setPrimary(id) {
+  try { await api(`/api/resumes/${id}`, { method: 'PATCH', body: { is_primary: true } }); load(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+/* ---------------- resume preview ---------------- */
+let _zoom = 1, _zoomTarget = null;
+
+function _loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+async function _ensureDocxPreview() {
+  if (window.docx) return;
+  await _loadScript('https://unpkg.com/jszip@3.10.1/dist/jszip.min.js');
+  await _loadScript('https://unpkg.com/docx-preview/dist/docx-preview.min.js');
+}
+async function _ensurePdfJs() {
+  if (window.pdfjsLib) return;
+  await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+function _setZoomTarget(el) {
+  _zoom = 1; _zoomTarget = el;
+  for (const id of ['zoomInBtn', 'zoomOutBtn']) document.getElementById(id).classList.remove('hidden');
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('zoomInBtn').onclick = () => { _zoom = Math.min(2.4, _zoom + 0.2); if (_zoomTarget) _zoomTarget.style.zoom = _zoom; };
+  document.getElementById('zoomOutBtn').onclick = () => { _zoom = Math.max(0.6, _zoom - 0.2); if (_zoomTarget) _zoomTarget.style.zoom = _zoom; };
+});
+
+async function openPreview(resumeId) {
+  const r = (P.resumes || []).find(x => x.id === resumeId);
+  if (!r) return;
+  const modal = document.getElementById('previewModal');
+  const body = document.getElementById('previewBody');
+  document.getElementById('previewTitle').textContent = r.label;
+  document.getElementById('previewOpenTab').href = `/api/resumes/${resumeId}/file`;
+  for (const id of ['zoomInBtn', 'zoomOutBtn']) document.getElementById(id).classList.add('hidden');
+  modal.classList.remove('hidden');
+
+  if (r.file_type === 'pdf') {
+    // Render with PDF.js (canvas) rather than an <iframe> — browsers/webviews
+    // are inconsistent about displaying PDFs inline in iframes (often blank).
+    body.innerHTML = '<p class="p-6 text-gray-500 animate-pulse">Rendering PDF…</p>';
+    try {
+      await _ensurePdfJs();
+      const buf = await (await fetch(`/api/resumes/${resumeId}/file`)).arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+      const holder = document.createElement('div');
+      holder.className = 'mx-auto my-4 w-fit';
+      body.innerHTML = '';
+      body.appendChild(holder);
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        canvas.className = 'block mx-auto mb-3 shadow bg-white max-w-full h-auto';
+        holder.appendChild(canvas);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      }
+      _setZoomTarget(holder);
+      return;
+    } catch (e) {
+      // last resort: offer the open-in-new-tab link prominently
+      body.innerHTML = `<div class="p-8 text-center">
+        <p class="text-gray-600 dark:text-gray-300 mb-3">This PDF couldn't be rendered inline.</p>
+        <a href="/api/resumes/${resumeId}/file" target="_blank"
+           class="tap inline-block bg-indigo-600 text-white rounded-xl px-5 py-2 font-medium">Open the resume in a new tab ↗</a></div>`;
+      return;
+    }
+  }
+  if (r.file_type === 'docx') {
+    body.innerHTML = '<p class="p-6 text-gray-500 animate-pulse">Rendering document…</p>';
+    try {
+      await _ensureDocxPreview();
+      const blob = await (await fetch(`/api/resumes/${resumeId}/file`)).blob();
+      const holder = document.createElement('div');
+      holder.className = 'mx-auto my-4';
+      body.innerHTML = '';
+      body.appendChild(holder);
+      await window.docx.renderAsync(blob, holder, null, { inWrapper: true, ignoreHeight: true });
+      _setZoomTarget(holder);
+      return;
+    } catch (e) { /* fall through to text view */ }
+  }
+  await _renderTextPreview(resumeId, body);
+}
+async function _renderTextPreview(resumeId, body) {
+  body.innerHTML = '<p class="p-6 text-gray-500 animate-pulse">Loading…</p>';
+  try {
+    const d = await api(`/api/resumes/${resumeId}/text`);
+    body.innerHTML = `<div id="textPreviewPage" class="bg-white dark:bg-gray-800 max-w-3xl mx-auto my-4 px-8 py-10 rounded-xl shadow
+      whitespace-pre-wrap text-sm leading-relaxed">${esc(d.text || '(no text extracted)')}</div>`;
+    _setZoomTarget(document.getElementById('textPreviewPage'));
+  } catch (e) { body.innerHTML = `<p class="p-6 text-rose-600">${esc(e.message)}</p>`; }
+}
+function closePreview() {
+  document.getElementById('previewModal').classList.add('hidden');
+  document.getElementById('previewBody').innerHTML = '';
+  _zoomTarget = null;
+}
+
+async function adviceNow() {
+  toast('Generating your resume review — this can take ~30 seconds…');
+  try {
+    const r = await api('/api/resume-advice', { method: 'POST' });
+    if (r.sent) toast('Done! Check your email (or the data/outbox folder in dev mode).');
+    else toast(r.reason || 'Could not send the advice email.', 'warn');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function analyzeLinkedIn() {
+  toast('Analyzing your LinkedIn profile…');
+  try {
+    const r = await api('/api/linkedin/analyze', { method: 'POST' });
+    if (r.error) { toast(r.error, 'warn'); return; }
+    renderLinkedIn(r, new Date().toISOString());
+    toast('LinkedIn analysis complete');
+  } catch (e) { toast(e.message, 'err'); }
+}
+function renderLinkedIn(a, when) {
+  if (!a) return;
+  const el = document.getElementById('liResult');
+  el.innerHTML = `<div class="rounded-xl bg-sky-50 dark:bg-sky-900/30 p-3">
+    <div class="font-semibold">LinkedIn score: ${a.score ?? '–'}/100 <span class="text-xs font-normal text-gray-500">(${esc((when||'').slice(0,10))})</span>
+      ${a.scraped === false ? '<span class="text-xs text-amber-600 block">Profile could not be scraped (private) — suggestions based on your resume & market data.</span>' : ''}</div>
+    <ul class="list-disc ml-5 mt-1 space-y-1">${(a.suggestions || []).map(s =>
+      `<li><span class="uppercase text-xs font-bold ${s.priority==='high'?'text-rose-600':s.priority==='low'?'text-gray-400':'text-amber-600'}">${esc(s.priority||'')}</span> <strong>${esc(s.category||'')}:</strong> ${esc(s.suggestion||'')}</li>`).join('')}</ul></div>`;
+}
+
+async function validatePortfolio() {
+  try {
+    await api('/api/profile', { method: 'PUT', body: { portfolio_url: document.getElementById('portfolio_url').value } });
+    const r = await api('/api/portfolio/validate', { method: 'POST' });
+    renderPortfolioCheck(r);
+  } catch (e) { toast(e.message, 'err'); }
+}
+function renderPortfolioCheck(c) {
+  const el = document.getElementById('pfResult');
+  const when = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  el.innerHTML = c.is_accessible
+    ? `<div class="text-emerald-600">✅ Portfolio is live and accessible (checked ${when}, ${c.response_time_ms} ms)</div>`
+    : `<div class="text-rose-600">⚠️ ${esc((c.issues || []).join('; ') || 'Portfolio check failed')} — as of ${when}. Please check your URL.</div>`;
+}
+async function analyzePortfolio() {
+  toast('Analyzing your portfolio — this can take a moment…');
+  try {
+    await api('/api/profile', { method: 'PUT', body: { portfolio_url: document.getElementById('portfolio_url').value } });
+    const r = await api('/api/portfolio/analyze', { method: 'POST' });
+    if (r.error) { toast(r.error, 'warn'); if (r.basic) renderPortfolioCheck(r.basic); return; }
+    const b = r.breakdown || {};
+    document.getElementById('pfResult').innerHTML = `<div class="rounded-xl bg-sky-50 dark:bg-sky-900/30 p-3">
+      <div class="font-semibold">Portfolio score: ${r.score}/100</div>
+      <div class="text-xs text-gray-500 mt-1">Design ${b.design ?? '–'}/20 · Content ${b.content ?? '–'}/20 · Navigation ${b.navigation ?? '–'}/20 · Mobile ${b.mobile ?? '–'}/20 · Professionalism ${b.professionalism ?? '–'}/20</div>
+      <p class="mt-1">${esc(r.summary || '')}</p>
+      ${(r.improvements || []).length ? '<strong class="block mt-1">Improvements:</strong><ul class="list-disc ml-5">' + r.improvements.map(i => `<li>${esc(i)}</li>`).join('') + '</ul>' : ''}</div>`;
+    toast('Portfolio analysis complete');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function toggleGoalForm() { document.getElementById('goalForm').classList.toggle('hidden'); }
+async function createGoal() {
+  try {
+    const r = await api('/api/goals', { method: 'POST', body: {
+      goal_type: document.getElementById('goalType').value,
+      goal_target: parseInt(document.getElementById('goalTarget').value || '1'),
+      goal_period: document.getElementById('goalPeriod').value } });
+    renderGoals(r.goals); toggleGoalForm(); toast('Goal created!');
+  } catch (e) { toast(e.message, 'err'); }
+}
+function renderGoals(goals) {
+  const list = document.getElementById('goalList');
+  list.innerHTML = goals.length ? '' : '<p class="text-sm text-gray-500">No active goals yet — set one to stay accountable!</p>';
+  goals.forEach(g => {
+    const div = document.createElement('div');
+    div.className = 'border border-gray-200 dark:border-gray-700 rounded-xl p-3';
+    const enc = g.percentage >= 100 ? '🎉 Goal complete — amazing!' :
+                g.percentage >= 50 ? `🎉 Over halfway there! ${g.current_progress} of ${g.goal_target} done.` :
+                `${g.days_remaining} day${g.days_remaining === 1 ? '' : 's'} left in this period.`;
+    div.innerHTML = `
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <strong class="text-sm">${esc(g.description)}</strong>
+        <div class="flex gap-1 items-center">
+          <label class="text-xs text-gray-500">Target:
+            <input type="number" min="1" value="${g.goal_target}" onchange="editGoal(${g.id}, this.value)"
+                   class="tap w-16 ml-1 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm"></label>
+          <button class="tap text-xs px-2 py-1 rounded-lg bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200" onclick="armConfirm(this, () => deleteGoal(${g.id}))">Delete</button>
+        </div>
+      </div>
+      <div class="mt-2 bg-gray-200 dark:bg-gray-700 rounded-full h-3 overflow-hidden">
+        <div class="bg-emerald-500 h-3 rounded-full transition-all" style="width:${g.percentage}%"></div>
+      </div>
+      <div class="text-xs text-gray-500 mt-1">${g.current_progress}/${g.goal_target} (${g.percentage}%) — ${enc}</div>`;
+    list.appendChild(div);
+  });
+}
+async function editGoal(id, value) {
+  const target = parseInt(value || '0');
+  if (!target || target < 1) return;
+  try { const r = await api(`/api/goals/${id}`, { method: 'PUT', body: { goal_target: target } }); renderGoals(r.goals); toast('Goal updated'); }
+  catch (e) { toast(e.message, 'err'); }
+}
+async function deleteGoal(id) {
+  try { await api(`/api/goals/${id}`, { method: 'DELETE' }); const r = await api('/api/goals'); renderGoals(r.goals); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+async function dismissCert(id) {
+  try { await api(`/api/certs/${id}/dismiss`, { method: 'POST' }); load(); } catch (e) {}
+}
+
+function openDeleteModal() {
+  document.getElementById('deleteConfirm').value = '';
+  document.getElementById('deleteModal').classList.remove('hidden');
+}
+async function confirmDelete() {
+  if (document.getElementById('deleteConfirm').value.trim() !== 'DELETE') { toast('Type DELETE to confirm.', 'warn'); return; }
+  try {
+    await api('/api/profile', { method: 'DELETE' });
+    location.href = '/login';
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function load() {
+  P = await api('/api/profile');
+  // notices for dev modes
+  const notes = [];
+  if (P.email_mode === 'outbox') notes.push("Email is in OUTBOX dev mode — emails (incl. OTP codes) are written to the data/outbox folder.");
+  if ((P.search_providers || []).includes('demo')) notes.push("No job-search API keys configured — the automation uses realistic DEMO listings.");
+  if (!P.llm_available) notes.push("No Anthropic API key — AI features run on simple heuristics.");
+  const bar = document.getElementById('noticeBar');
+  if (notes.length) { bar.textContent = '⚠️ ' + notes.join(' '); bar.classList.remove('hidden'); }
+
+  // strength gauge
+  const score = P.resume_strength_score;
+  document.getElementById('strengthNum').textContent = score ?? '–';
+  document.getElementById('strengthArc').setAttribute('stroke-dasharray', `${score || 0} 100`);
+  document.getElementById('strengthArc').setAttribute('stroke', (score || 0) >= 75 ? '#10b981' : (score || 0) >= 50 ? '#f59e0b' : '#ef4444');
+  document.getElementById('strengthSummary').textContent = P.resume_strength_summary || '';
+
+  renderResumes();
+
+  // simple fields
+  for (const f of ['bio','preferred_salary','minimum_salary','preferred_positions','additional_skills',
+                   'feedback_notes','linkedin_url','portfolio_url','home_address']) {
+    const el = document.getElementById(f); if (el) el.value = P[f] || '';
+  }
+  document.getElementById('liPrompt').style.display = P.linkedin_url ? 'none' : '';
+  for (const f of ['resume_advice_enabled','exclude_drug_testing','exclude_criminal_record_filter','urgency_alerts_enabled']) {
+    const el = document.getElementById(f); if (el) el.checked = !!P[f];
+  }
+  document.getElementById('search_radius_miles').value = P.search_radius_miles || 15;
+  document.getElementById('radiusVal').textContent = P.search_radius_miles || 15;
+  document.getElementById('commute_max_minutes').value = P.commute_max_minutes || 30;
+  document.getElementById('commuteVal').textContent = P.commute_max_minutes || 30;
+  const isRadius = (P.commute_mode || 'radius') === 'radius';
+  document.querySelector(`input[name=commuteMode][value=${isRadius ? 'radius' : 'time'}]`).checked = true;
+  document.getElementById('radiusBox').classList.toggle('hidden', !isRadius);
+  document.getElementById('commuteBox').classList.toggle('hidden', isRadius);
+  if (!isRadius) document.getElementById('commute_mode').value = P.commute_mode;
+  const freqEl = document.querySelector(`input[name=freq][value=${P.email_frequency || 'every_3_days'}]`);
+  if (freqEl) freqEl.checked = true;
+
+  tagInput('tag_search_keywords', 'search_keywords', P.search_keywords || []);
+  tagInput('tag_negative_keywords', 'negative_keywords', P.negative_keywords || []);
+  tagInput('tag_blacklisted_companies', 'blacklisted_companies', P.blacklisted_companies || []);
+  tagInput('tag_whitelisted_companies', 'whitelisted_companies', P.whitelisted_companies || []);
+  pillToggles('industryPills', 'industry_preferences', INDUSTRIES, P.industry_preferences || []);
+  pillToggles('benefitPills', 'preferred_benefits', BENEFITS, P.preferred_benefits || []);
+
+  // job types
+  const jt = document.getElementById('jobTypes');
+  jt.innerHTML = '';
+  JOB_TYPES.forEach(([field, label]) => {
+    const l = document.createElement('label');
+    l.className = 'tap flex items-center gap-2 text-sm';
+    l.innerHTML = `<input type="checkbox" ${P[field] ? 'checked' : ''}> ${label}`;
+    l.querySelector('input').onchange = e => saveField(field, e.target.checked);
+    jt.appendChild(l);
+  });
+
+  // email prefs
+  const ep = document.getElementById('emailPrefs');
+  ep.innerHTML = '';
+  EMAIL_PREFS.forEach(([field, label, desc]) => {
+    const l = document.createElement('label');
+    l.className = 'tap flex items-start gap-2 text-sm';
+    l.innerHTML = `<input type="checkbox" ${P[field] ? 'checked' : ''}>
+      <span><strong>${label}</strong><br><span class="text-xs text-gray-500">${desc}</span></span>`;
+    l.querySelector('input').onchange = e => saveField(field, e.target.checked);
+    ep.appendChild(l);
+  });
+
+  // parsed data
+  document.getElementById('pName').textContent = P.full_name || '—';
+  document.getElementById('pEmail').textContent = P.email || '—';
+  document.getElementById('pLoc').textContent = [P.city, P.state].filter(Boolean).join(', ') || '—';
+  document.getElementById('pLevel').textContent = P.experience_level || '—';
+  document.getElementById('pSkills').innerHTML = (P.skills || []).map(s =>
+    `<span class="inline-block bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-200 text-xs rounded-full px-2 py-0.5 m-0.5">${esc(s)}</span>`).join('') || '—';
+  const wh = P.work_history || [];
+  document.getElementById('pHistory').innerHTML = wh.length
+    ? '<span class="text-gray-500">Work history:</span><ul class="list-disc ml-5 mt-1">' +
+      wh.map(w => `<li><strong>${esc(w.title || '')}</strong> at ${esc(w.company || '')} <span class="text-gray-500">(${esc(w.duration || '')})</span></li>`).join('') + '</ul>'
+    : '';
+
+  // skills gap & certs
+  const gaps = P.skills_gap_summary || [];
+  document.getElementById('gapSummary').innerHTML = gaps.length
+    ? 'Based on recent job matches, consider highlighting: ' + gaps.map(g => `<strong>${esc(g)}</strong>`).join(', ') + '.'
+    : 'Your skills are well-aligned with recent job matches. 👍';
+  const certs = document.getElementById('certCards');
+  certs.innerHTML = '';
+  (P.cert_recommendations || []).forEach(c => {
+    const div = document.createElement('div');
+    div.className = 'rounded-xl bg-amber-50 dark:bg-amber-900/30 p-3 text-sm';
+    div.innerHTML = `<div class="flex justify-between gap-2">
+      <strong>📚 ${c.gap_count} recent jobs asked for ${esc(c.skill_name)}</strong>
+      <button class="tap !min-h-0 text-xs text-gray-500" onclick="dismissCert(${c.id})">Dismiss</button></div>
+      <ul class="list-disc ml-5 mt-1">${(c.courses || []).map(course =>
+        `<li><a class="text-indigo-600 dark:text-indigo-300 underline" target="_blank" href="${esc(course.url)}">${esc(course.name)}</a> — ${esc(course.provider || '')} (${esc(course.price || '')})</li>`).join('')}</ul>`;
+    certs.appendChild(div);
+  });
+
+  renderLinkedIn(P.linkedin_analysis, P.linkedin_analysis?.created_at);
+  if (P.portfolio_status) renderPortfolioCheck(P.portfolio_status);
+  renderGoals(P.goals || []);
+}
+load().catch(e => toast(e.message, 'err'));
+</script>
+{% endblock %}

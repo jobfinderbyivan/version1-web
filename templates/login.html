@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in — Job Search Assistant</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' };</script>
+<style>.tap { min-height: 44px; }</style>
+</head>
+<body class="bg-gradient-to-br from-indigo-600 to-violet-700 min-h-screen flex items-center justify-center p-4">
+<div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
+  <div class="text-center mb-6">
+    <div class="text-5xl mb-2">🎯</div>
+    <h1 class="text-2xl font-bold text-gray-900">Job Search Assistant</h1>
+    <p class="text-gray-500 mt-1">Sign in with your email — no password needed.</p>
+  </div>
+
+  <div id="step1">
+    <label class="block text-sm font-medium text-gray-700 mb-1" for="email">Email address</label>
+    <input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+           class="tap w-full border border-gray-300 rounded-xl px-4 py-3 text-base focus:ring-2 focus:ring-indigo-500 outline-none">
+    <button onclick="sendCode()" id="sendBtn"
+            class="tap w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl py-3">
+      Send Code
+    </button>
+  </div>
+
+  <div id="step2" class="hidden">
+    <p id="genericMsg" class="text-sm text-emerald-700 bg-emerald-50 rounded-lg p-3 mb-4"></p>
+    <label class="block text-sm font-medium text-gray-700 mb-1" for="code">6-digit code</label>
+    <input id="code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="••••••"
+           class="tap w-full border border-gray-300 rounded-xl px-4 py-3 text-2xl tracking-[0.5em] text-center focus:ring-2 focus:ring-indigo-500 outline-none">
+    <button onclick="verify()" id="verifyBtn"
+            class="tap w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl py-3">
+      Verify
+    </button>
+    <button onclick="sendCode(true)" id="resendBtn" disabled
+            class="tap w-full mt-2 text-indigo-600 disabled:text-gray-400 font-medium py-2">
+      Resend Code (<span id="cooldown">60</span>s)
+    </button>
+  </div>
+
+  <p id="error" class="hidden mt-4 text-sm text-rose-700 bg-rose-50 rounded-lg p-3"></p>
+</div>
+
+<script>
+let cooldownTimer = null;
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg; el.classList.remove('hidden');
+}
+async function sendCode(isResend) {
+  document.getElementById('error').classList.add('hidden');
+  const email = document.getElementById('email').value.trim();
+  if (!email) { showError('Please enter your email address.'); return; }
+  const btn = document.getElementById('sendBtn'); btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/auth/request-otp', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ email }) });
+    const data = await r.json();
+    document.getElementById('genericMsg').textContent = data.message || 'If this email is registered, a code has been sent.';
+    document.getElementById('step1').classList.add('hidden');
+    document.getElementById('step2').classList.remove('hidden');
+    const codeEl = document.getElementById('code');
+    codeEl.value = ''; codeEl.focus();
+    startCooldown();
+  } catch (e) { showError('Could not reach the server. Is it running?'); }
+  btn.disabled = false; btn.textContent = 'Send Code';
+}
+function startCooldown() {
+  const resend = document.getElementById('resendBtn');
+  let n = 60; resend.disabled = true;
+  clearInterval(cooldownTimer);
+  cooldownTimer = setInterval(() => {
+    n--; document.getElementById('cooldown').textContent = n;
+    if (n <= 0) { clearInterval(cooldownTimer); resend.disabled = false; resend.innerHTML = 'Resend Code'; }
+  }, 1000);
+}
+async function verify() {
+  document.getElementById('error').classList.add('hidden');
+  const email = document.getElementById('email').value.trim();
+  const code = document.getElementById('code').value.trim();
+  const btn = document.getElementById('verifyBtn'); btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const r = await fetch('/api/auth/verify-otp', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ email, code }) });
+    const data = await r.json();
+    if (r.ok) { location.href = '/profile'; return; }
+    showError(data.detail || 'Invalid or expired code.');
+  } catch (e) { showError('Could not reach the server.'); }
+  btn.disabled = false; btn.textContent = 'Verify';
+}
+document.getElementById('code')?.addEventListener('keydown', e => { if (e.key === 'Enter') verify(); });
+document.getElementById('email').addEventListener('keydown', e => { if (e.key === 'Enter') sendCode(); });
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-wal
+*.db-shm
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+.vscode/
+.idea/
+tests/

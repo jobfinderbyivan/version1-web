@@ -1,0 +1,125 @@
+"""Central configuration. Loads .env (simple parser, no extra dependency)."""
+import os
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+RESUME_DIR = DATA_DIR / "resumes"
+OUTBOX_DIR = DATA_DIR / "outbox"
+DB_PATH = DATA_DIR / "app.db"
+
+
+def _load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv(BASE_DIR / ".env")
+
+for _d in (DATA_DIR, RESUME_DIR, OUTBOX_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
+
+
+def env(key: str, default: str = "") -> str:
+    return os.environ.get(key, default).strip()
+
+
+def env_bool(key: str, default: bool = True) -> bool:
+    raw = env(key, "true" if default else "false").lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+ADMIN_EMAIL = env("ADMIN_EMAIL", "ivandoublejr@gmail.com").lower()
+ALERT_EMAIL = env("ALERT_EMAIL", ADMIN_EMAIL)
+
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
+LLM_MODEL = env("LLM_MODEL", "claude-opus-4-8")
+
+EMAIL_MODE = env("EMAIL_MODE", "auto").lower()
+SMTP_HOST = env("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(env("SMTP_PORT", "587") or 587)
+SMTP_USER = env("SMTP_USER")
+SMTP_PASSWORD = env("SMTP_PASSWORD")
+SMTP_FROM_NAME = env("SMTP_FROM_NAME", "Job Search Assistant")
+# Sender address; defaults to SMTP_USER (correct for Gmail). Set separately for
+# relays like Brevo/SendGrid where the SMTP login is not an email address.
+SMTP_FROM = env("SMTP_FROM") or SMTP_USER
+
+ADZUNA_APP_ID = env("ADZUNA_APP_ID")
+ADZUNA_APP_KEY = env("ADZUNA_APP_KEY")
+ADZUNA_COUNTRY = env("ADZUNA_COUNTRY", "us")
+JSEARCH_API_KEY = env("JSEARCH_API_KEY")
+THEIRSTACK_API_KEY = env("THEIRSTACK_API_KEY")
+USAJOBS_API_KEY = env("USAJOBS_API_KEY")
+# USAJOBS requires the registered email address in the User-Agent header
+USAJOBS_USER_AGENT = env("USAJOBS_USER_AGENT") or ADMIN_EMAIL
+
+GOOGLE_MAPS_API_KEY = env("GOOGLE_MAPS_API_KEY")
+# Search-engine dorking (tools/google_dork_ats.py). Serper.dev is the current
+# recommended backend (free 2,500 queries); Google CSE is closed to new
+# customers as of 2026 but still works for grandfathered accounts.
+SERPER_API_KEY = env("SERPER_API_KEY")
+GOOGLE_CSE_KEY = env("GOOGLE_CSE_KEY")
+GOOGLE_CSE_ID = env("GOOGLE_CSE_ID")
+
+HOST = env("HOST", "127.0.0.1")
+PORT = int(env("PORT", "8000") or 8000)
+APP_BASE_URL = env("APP_BASE_URL", f"http://{HOST}:{PORT}").rstrip("/")
+SECRET_KEY = env("SECRET_KEY", "dev-secret-change-me")
+# Mark session cookies Secure when served over HTTPS (production). Auto-detects
+# from APP_BASE_URL; override with SECURE_COOKIES=true/false if needed.
+SECURE_COOKIES = env_bool("SECURE_COOKIES", APP_BASE_URL.startswith("https://"))
+
+AUTOMATION_HOUR = int(env("AUTOMATION_HOUR", "8") or 8)
+SCHEDULER_ENABLED = env_bool("SCHEDULER_ENABLED", True)
+# Listings older than this are discarded. Job APIs often index postings days
+# after publication, so the spec's 3-day window is too strict in practice;
+# dedup still guarantees no job is ever sent twice.
+SEARCH_RECENCY_DAYS = int(env("SEARCH_RECENCY_DAYS", "7") or 7)
+
+SESSION_DAYS = 7
+OTP_TTL_MINUTES = 10
+OTP_MAX_ATTEMPTS = 5
+OTP_LOCKOUT_MINUTES = 30
+MAX_RESUMES_PER_USER = 3
+RESUME_TEXT_LIMIT = 8000  # chars sent to the LLM
+
+# $/1M tokens (input, output) — used for cost estimation only.
+MODEL_PRICING = {
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-opus-4-7": (5.00, 25.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+
+
+def effective_email_mode() -> str:
+    if EMAIL_MODE == "smtp":
+        return "smtp"
+    if EMAIL_MODE == "outbox":
+        return "outbox"
+    return "smtp" if (SMTP_USER and SMTP_PASSWORD) else "outbox"
+
+
+def search_provider_names() -> list:
+    names = []
+    if ADZUNA_APP_ID and ADZUNA_APP_KEY:
+        names.append("adzuna")
+    if JSEARCH_API_KEY:
+        names.append("jsearch")
+    if THEIRSTACK_API_KEY:
+        names.append("theirstack")
+    if USAJOBS_API_KEY:
+        names.append("usajobs")
+    if not names:
+        names.append("demo")
+    return names

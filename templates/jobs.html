@@ -1,0 +1,527 @@
+{% extends "base.html" %}
+{% block title %}Job History — Job Search Assistant{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+{% endblock %}
+{% block content %}
+
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+  <div>
+    <h1 class="text-2xl font-bold">{{ user.full_name or 'Your' }} Job History</h1>
+    <p class="text-sm text-gray-500 dark:text-gray-400"><span id="totalJobs">…</span> jobs sent to you so far</p>
+  </div>
+  <div class="flex items-center gap-3 flex-wrap">
+    <button id="runNowBtn" onclick="runSearchNow()"
+            title="Searches all job sources, ranks matches with AI, and emails you the results immediately"
+            class="tap bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-xl px-4 py-2 text-sm font-semibold shadow">
+      🔍 Find new jobs now
+    </button>
+    <div id="healthBadge"></div>
+  </div>
+</div>
+
+<!-- Pipeline metrics -->
+<div id="pipeline" class="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-4"></div>
+
+<!-- Market intelligence (collapsible) -->
+<details class="bg-white dark:bg-gray-800 rounded-2xl shadow mb-4">
+  <summary class="tap cursor-pointer p-4 font-bold">📈 Job Market Intelligence Dashboard</summary>
+  <div class="p-4 pt-0 grid lg:grid-cols-2 gap-5">
+    <div>
+      <h3 class="font-semibold text-sm mb-1">Salary Trend</h3>
+      <p id="salaryNote" class="text-xs text-gray-500 mb-2"></p>
+      <canvas id="salaryChart" height="170"></canvas>
+    </div>
+    <div>
+      <h3 class="font-semibold text-sm mb-2">Skills Demand Heatmap</h3>
+      <canvas id="skillsChart" height="170"></canvas>
+    </div>
+    <div class="lg:col-span-2">
+      <h3 class="font-semibold text-sm mb-2">Competitor Analysis — what employers most commonly ask for in roles like yours</h3>
+      <div id="competitorPanel" class="flex flex-wrap gap-2 text-sm"></div>
+    </div>
+  </div>
+</details>
+
+<!-- Map (collapsible) -->
+<details class="bg-white dark:bg-gray-800 rounded-2xl shadow mb-4" open>
+  <summary class="tap cursor-pointer p-4 font-bold">🗺️ Map View</summary>
+  <div id="map" class="w-full rounded-b-2xl" style="height:300px"></div>
+  <div class="p-2 text-xs text-gray-500 flex flex-wrap gap-3">
+    <span>⚪ Not applied</span><span>🔵 Applied</span><span>🟢 Heard back / interview</span><span>🟡 Offer</span><span>🔴 Rejected</span>
+  </div>
+</details>
+
+<!-- Filters -->
+<div class="flex flex-wrap items-center gap-2 mb-3">
+  <select id="filterSel" onchange="page=1;loadJobs()" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm">
+    <option value="all">All</option><option value="applied">Applied</option>
+    <option value="heard_back">Heard Back</option><option value="interview_offered">Interview Offered</option>
+    <option value="offer_received">Offer Received</option><option value="rejected">Rejected</option>
+    <option value="not_interested">Not Interested</option><option value="not_yet_applied">Not Yet Applied</option>
+  </select>
+  <select id="sortSel" onchange="page=1;loadJobs()" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm">
+    <option value="date">Newest first</option><option value="score">Match score</option>
+    <option value="company">Company name</option><option value="title">Job title</option>
+  </select>
+  <div class="ml-auto flex items-center gap-1">
+    <button onclick="if(page>1){page--;loadJobs()}" class="tap px-3 py-2 rounded-xl bg-white dark:bg-gray-700 shadow text-sm">←</button>
+    <span id="pageInfo" class="text-sm px-2"></span>
+    <button onclick="if(page<pages){page++;loadJobs()}" class="tap px-3 py-2 rounded-xl bg-white dark:bg-gray-700 shadow text-sm">→</button>
+  </div>
+</div>
+
+<div id="jobList" class="space-y-4"></div>
+<p id="emptyMsg" class="hidden text-center text-gray-500 py-10">No jobs here yet. Once the automation runs, your matches appear here (and in your email).</p>
+
+<!-- Interview prep modal -->
+<div id="prepModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl max-w-3xl w-full max-h-[88vh] flex flex-col">
+    <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
+      <h3 class="font-bold">🎓 Interview Prep</h3>
+      <button onclick="closeModal('prepModal')" class="tap px-3 text-xl">×</button>
+    </div>
+    <div id="prepBody" class="p-4 overflow-y-auto prose dark:prose-invert max-w-none text-sm"></div>
+  </div>
+</div>
+
+<!-- Mock interview modal -->
+<div id="mockModal" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-3">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl max-w-2xl w-full max-h-[92vh] flex flex-col">
+    <div class="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
+      <div>
+        <h3 class="font-bold">🎤 Practice Interview</h3>
+        <p id="mockJobTitle" class="text-xs text-gray-500"></p>
+      </div>
+      <button onclick="armConfirm(this, () => endMock())" class="tap px-3 py-1 rounded-xl bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200 text-sm">End Interview</button>
+    </div>
+    <div id="mockBody" class="p-4 overflow-y-auto flex-1"></div>
+  </div>
+</div>
+
+<!-- Success story modal -->
+<div id="storyModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl max-w-md w-full p-5">
+    <h3 class="font-bold text-lg">🎉 Congratulations!</h3>
+    <p class="text-sm text-gray-600 dark:text-gray-300 mb-3">Would you like to share your success story to inspire others? It's shared 100% anonymously.</p>
+    <input id="storyPrev" placeholder="Previous role (e.g. Retail Associate)" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-2">
+    <input id="storyNew" placeholder="New role" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-2">
+    <input id="storySalary" placeholder="Salary (optional)" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-2">
+    <input id="storyTime" placeholder="How long did the search take? (e.g. 6 weeks)" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-2">
+    <textarea id="storyText" maxlength="500" rows="3" placeholder="Your story (max 500 chars)" class="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-3"></textarea>
+    <div class="flex justify-end gap-2">
+      <button onclick="closeModal('storyModal')" class="tap px-4 py-2 rounded-xl bg-gray-200 dark:bg-gray-700">Not now</button>
+      <button onclick="submitStory()" class="tap px-4 py-2 rounded-xl bg-emerald-600 text-white font-medium">Share Anonymously</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let page = 1, pages = 1, benefitPrefs = [], map = null;
+
+const STATUS_BOXES = [["applied","Applied To"],["heard_back","Heard Back From"],
+  ["interview_offered","Interview Offered"],["offer_received","Offer Received"],["rejected","Rejected"]];
+const NI_REASONS = [["too_far","Too far"],["bad_reviews","Bad company reviews"],["wrong_industry","Wrong industry"],
+  ["low_pay","Low pay"],["not_relevant","Not relevant"],["other","Other"]];
+const BENEFIT_LABELS = {health_insurance:"🏥 Health Insurance","401k":"💰 401k",pto:"🏖️ PTO",
+  remote_flexibility:"🏠 Remote Flex",tuition_reimbursement:"🎓 Tuition",dental_vision:"🦷 Dental/Vision",
+  parental_leave:"👶 Parental Leave",professional_development:"📚 Prof. Dev.",stock_options:"📈 Equity"};
+
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function scoreBadge(score) {
+  const color = score >= 80 ? 'bg-emerald-600' : score >= 60 ? 'bg-amber-500' : 'bg-orange-600';
+  return `<span class="${color} text-white text-xs font-bold rounded-full px-2.5 py-1">${score}% Match</span>`;
+}
+
+function jobCard(j) {
+  const div = document.createElement('div');
+  div.className = 'bg-white dark:bg-gray-800 rounded-2xl shadow p-4 ' + (j.not_interested ? 'opacity-50' : '');
+  const r = j.company_research || {};
+  const researchBits = ['size','glassdoor_rating','recent_news','mission','notable_info']
+    .filter(k => r[k]).map(k => esc(r[k])).join(' · ');
+  const benefits = (j.detected_benefits || []).map(b =>
+    `<span class="text-xs rounded-full px-2 py-0.5 ${benefitPrefs.includes(b) ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200 font-semibold' : 'bg-gray-100 dark:bg-gray-700'}">${BENEFIT_LABELS[b] || esc(b)}</span>`).join(' ');
+  const deadlineSoon = j.deadline_date && (new Date(j.deadline_date) - Date.now() < 3 * 864e5);
+  const badges = [
+    j.is_urgent ? '<span class="text-xs bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200 rounded-full px-2 py-0.5">🔥 Urgent Hire</span>' : '',
+    j.deadline_date ? `<span class="text-xs ${deadlineSoon ? 'bg-rose-100 text-rose-700 dark:bg-rose-900 dark:text-rose-200' : 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-200'} rounded-full px-2 py-0.5">⏰ Deadline: ${esc(j.deadline_date)}</span>` : '',
+    j.is_reopened ? '<span class="text-xs bg-sky-100 dark:bg-sky-900 text-sky-700 dark:text-sky-200 rounded-full px-2 py-0.5">🔄 Reopened Position</span>' : '',
+    j.is_multi_hire ? '<span class="text-xs bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200 rounded-full px-2 py-0.5">👥 Hiring Multiple</span>' : '',
+  ].filter(Boolean).join(' ');
+
+  div.innerHTML = `
+    <div class="flex flex-wrap items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">${scoreBadge(j.match_score || 0)} ${badges}</div>
+        <h3 class="font-bold text-lg mt-1 break-words">${esc(j.job_title)}</h3>
+        <div class="text-sm text-gray-600 dark:text-gray-300">${esc(j.company_name)} · ${esc(j.location || '—')}</div>
+        <div class="text-sm mt-1">💰 ${esc(j.salary || 'Not listed')}${j.salary_source ? ` <span class="text-xs text-gray-400">via ${esc(j.salary_source)}</span>` : ''}
+          ${j.applicant_count ? ` · 👥 ${esc(j.applicant_count)}` : ''}
+          ${j.commute_minutes ? ` · 🚗 ~${j.commute_minutes} min` : ''}</div>
+      </div>
+      <div class="text-right shrink-0">
+        <a href="${esc(j.apply_link)}" target="_blank" rel="noopener"
+           class="tap inline-flex items-center bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl px-4 py-2 font-medium">Apply →</a>
+        ${j.aggregate_link && j.aggregate_link !== j.apply_link ? `<div class="text-xs mt-1"><a class="underline text-gray-500" target="_blank" href="${esc(j.aggregate_link)}">Also listed on board</a></div>` : ''}
+        <div class="text-xs text-gray-400 mt-1">Emailed ${esc(j.date_emailed)}</div>
+      </div>
+    </div>
+    ${j.match_reason ? `<p class="text-sm mt-2">✅ ${esc(j.match_reason)}</p>` : ''}
+    ${(j.skills_gap || []).length ? `<div class="text-xs mt-2 bg-amber-50 dark:bg-amber-900/30 rounded-lg p-2">💡 This role asks for ${(j.skills_gap).map(s => `<strong>${esc(s)}</strong>`).join(', ')} — consider highlighting these if you have them.</div>` : ''}
+    ${benefits ? `<div class="mt-2 flex flex-wrap gap-1">${benefits}</div>` : ''}
+    ${researchBits ? `<details class="mt-2 text-sm"><summary class="tap cursor-pointer text-gray-500">📋 Company research</summary><div class="mt-1 bg-gray-50 dark:bg-gray-700 rounded-lg p-2">${researchBits}</div></details>` : ''}
+
+    <div class="mt-3 flex flex-wrap gap-x-4 gap-y-2 border-t border-gray-100 dark:border-gray-700 pt-3" data-boxes></div>
+    <div class="mt-2 hidden" data-interview>
+      <div class="grid sm:grid-cols-3 gap-2">
+        <input type="date" data-f="interview_date" value="${esc(j.interview_date || '')}" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm">
+        <input type="time" data-f="interview_time" value="${esc(j.interview_time || '')}" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm">
+        <input data-f="interview_notes" value="${esc(j.interview_notes || '')}" placeholder="Who did you speak with? How did it go?" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm">
+      </div>
+    </div>
+    <div class="mt-3 flex flex-wrap gap-2" data-actions></div>`;
+
+  // status checkboxes
+  const boxes = div.querySelector('[data-boxes]');
+  STATUS_BOXES.forEach(([field, label]) => {
+    const l = document.createElement('label');
+    l.className = 'tap flex items-center gap-1.5 text-sm';
+    l.innerHTML = `<input type="checkbox" ${j[field] ? 'checked' : ''}> ${label}`;
+    l.querySelector('input').onchange = async e => {
+      try {
+        const r = await api(`/api/jobs/${j.id}`, { method: 'PATCH', body: { [field]: e.target.checked } });
+        Object.assign(j, r.job);
+        if (field === 'offer_received' && e.target.checked) openStoryModal(j);
+        loadJobs(true);
+      } catch (err) { toast(err.message, 'err'); e.target.checked = !e.target.checked; }
+    };
+    boxes.appendChild(l);
+  });
+
+  // interview details + actions
+  const interview = div.querySelector('[data-interview]');
+  interview.classList.toggle('hidden', !j.interview_offered);
+  interview.querySelectorAll('input').forEach(inp => {
+    inp.onchange = () => api(`/api/jobs/${j.id}`, { method: 'PATCH', body: { [inp.dataset.f]: inp.value } })
+      .then(() => toast('Saved')).catch(e => toast(e.message, 'err'));
+  });
+
+  const actions = div.querySelector('[data-actions]');
+  const mkBtn = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.className = `tap text-sm px-3 py-2 rounded-xl ${cls}`;
+    b.innerHTML = label; b.onclick = fn; actions.appendChild(b);
+  };
+  mkBtn('🎤 Practice Interview', 'bg-violet-100 dark:bg-violet-900 text-violet-700 dark:text-violet-200', () => startMock(j));
+  if (j.interview_offered) {
+    mkBtn(j.has_prep ? '📖 View Prep Materials' : '🎓 Get Interview Prep',
+      'bg-sky-100 dark:bg-sky-900 text-sky-700 dark:text-sky-200', () => getPrep(j));
+    if (j.interview_date) {
+      mkBtn(j.calendar_event_synced ? '✅ Synced — download .ics' : '📅 Sync to Calendar',
+        'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200', () => syncCalendar(j));
+    }
+  }
+  if (!j.not_interested) {
+    const sel = document.createElement('select');
+    sel.className = 'tap text-sm px-2 py-2 rounded-xl bg-gray-100 dark:bg-gray-700';
+    sel.innerHTML = '<option value="">👎 Not Interested…</option>' +
+      NI_REASONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    sel.onchange = async () => {
+      if (!sel.value) return;
+      try {
+        await api(`/api/jobs/${j.id}`, { method: 'PATCH', body: { not_interested: true, not_interested_reason: sel.value } });
+        toast('Got it — we\'ll show fewer jobs like this.');
+        loadJobs(true);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    actions.appendChild(sel);
+  } else {
+    mkBtn('↩️ Undo Not Interested', 'bg-gray-100 dark:bg-gray-700', async () => {
+      await api(`/api/jobs/${j.id}`, { method: 'PATCH', body: { not_interested: false, not_interested_reason: '' } });
+      loadJobs(true);
+    });
+  }
+  return div;
+}
+
+async function loadJobs(quiet) {
+  const data = await api(`/api/jobs?filter=${document.getElementById('filterSel').value}&sort=${document.getElementById('sortSel').value}&page=${page}`);
+  pages = data.pages; benefitPrefs = data.benefit_prefs || [];
+  document.getElementById('pageInfo').textContent = `${data.page}/${data.pages}`;
+  document.getElementById('totalJobs').textContent = data.stats.total || 0;
+  const s = data.stats;
+  const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '—';
+  const cells = [
+    ['Applied', s.applied || 0, pct(s.applied || 0, s.total)],
+    ['Heard Back', s.heard_back || 0, pct(s.heard_back || 0, s.applied || 0)],
+    ['Interviews', s.interviews || 0, pct(s.interviews || 0, s.heard_back || 0)],
+    ['Offers', s.offers || 0, pct(s.offers || 0, s.interviews || 0)],
+    ['Rejected', s.rejected || 0, ''],
+    ['Success', '', pct(s.offers || 0, s.applied || 0)],
+  ];
+  document.getElementById('pipeline').innerHTML = cells.map(([l, n, p]) =>
+    `<div class="bg-white dark:bg-gray-800 rounded-xl shadow p-2 text-center">
+      <div class="text-lg font-bold">${n !== '' ? n : p}</div>
+      <div class="text-[11px] text-gray-500">${l}${n !== '' && p ? ' · ' + p : ''}</div></div>`).join('');
+  const list = document.getElementById('jobList');
+  list.innerHTML = '';
+  data.jobs.forEach(j => list.appendChild(jobCard(j)));
+  document.getElementById('emptyMsg').classList.toggle('hidden', data.jobs.length > 0);
+}
+
+async function loadIntelligence() {
+  const d = await api('/api/market-intelligence');
+  const h = d.health;
+  if (h) {
+    const color = h.health_score === 'STRONG' ? 'bg-emerald-600' : h.health_score === 'MODERATE' ? 'bg-amber-500' : 'bg-rose-600';
+    const emoji = h.health_score === 'STRONG' ? '💪' : h.health_score === 'MODERATE' ? '📊' : '⚠️';
+    const arrow = h.trend_direction === 'IMPROVING' ? '↑ Improving' : h.trend_direction === 'DECLINING' ? '↓ Declining' : '→ Stable';
+    document.getElementById('healthBadge').innerHTML =
+      `<div class="${color} text-white rounded-2xl px-4 py-2 text-center shadow">
+        <div class="font-bold">Your Job Market: ${h.health_score} ${emoji}</div>
+        <div class="text-xs opacity-90">~${h.jobs_per_week} matching jobs/week · ${arrow}</div></div>`;
+  }
+  const isDark = document.documentElement.classList.contains('dark');
+  const grid = isDark ? '#374151' : '#e5e7eb', tick = isDark ? '#9ca3af' : '#6b7280';
+  document.getElementById('salaryNote').textContent = d.salary_trend_note || 'Salary data accumulates as automation cycles run.';
+  if ((d.salary_trends || []).length) {
+    new Chart(document.getElementById('salaryChart'), {
+      type: 'line',
+      data: { labels: d.salary_trends.map(t => t.period_end),
+        datasets: [{ label: 'Avg salary', data: d.salary_trends.map(t => Math.round(t.avg_salary)),
+          borderColor: '#4f46e5', backgroundColor: 'rgba(79,70,229,.15)', fill: true, tension: .3 }] },
+      options: { plugins: { legend: { display: false } },
+        scales: { x: { grid: { color: grid }, ticks: { color: tick } }, y: { grid: { color: grid }, ticks: { color: tick } } } }
+    });
+  }
+  if ((d.skills_demand || []).length) {
+    new Chart(document.getElementById('skillsChart'), {
+      type: 'bar',
+      data: { labels: d.skills_demand.map(s => s.skill_name),
+        datasets: [{ data: d.skills_demand.map(s => s.percentage),
+          backgroundColor: d.skills_demand.map(s => s.percentage >= 60 ? '#dc2626' : s.percentage >= 35 ? '#f59e0b' : '#10b981') }] },
+      options: { indexAxis: 'y', plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: c => c.parsed.x + '% of matching jobs' } } },
+        scales: { x: { max: 100, grid: { color: grid }, ticks: { color: tick, callback: v => v + '%' } },
+                  y: { grid: { display: false }, ticks: { color: tick } } } }
+    });
+  }
+  document.getElementById('competitorPanel').innerHTML = (d.competitor_analysis || []).map(c =>
+    `<span class="bg-gray-100 dark:bg-gray-700 rounded-full px-3 py-1">${esc(c.qualification)} <strong>${c.percentage}%</strong></span>`).join('') ||
+    '<span class="text-gray-500">Competitor data appears after your first automation cycle.</span>';
+}
+
+async function loadMap() {
+  const d = await api('/api/jobs/map-data');
+  const center = d.home ? [d.home.lat, d.home.lon] : (d.jobs[0] ? [d.jobs[0].latitude, d.jobs[0].longitude] : [39.5, -98.35]);
+  map = L.map('map').setView(center, d.home ? 9 : 4);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+  if (d.home) L.marker([d.home.lat, d.home.lon]).addTo(map).bindPopup('🏠 ' + esc(d.home.label));
+  const colors = { new: '#9ca3af', applied: '#3b82f6', progress: '#10b981', offer: '#eab308', rejected: '#ef4444' };
+  d.jobs.forEach(j => {
+    L.circleMarker([j.latitude, j.longitude], { radius: 11, color: colors[j.status], fillColor: colors[j.status], fillOpacity: .8 })
+      .addTo(map).bindPopup(`<strong>${esc(j.job_title)}</strong><br>${esc(j.company_name)}<br>${j.match_score}% match`);
+  });
+}
+
+async function getPrep(j) {
+  document.getElementById('prepBody').innerHTML = '<p class="animate-pulse">Generating interview prep — this can take ~30 seconds…</p>';
+  document.getElementById('prepModal').classList.remove('hidden');
+  try {
+    const r = await api(`/api/jobs/${j.id}/interview-prep`, { method: j.has_prep ? 'GET' : 'POST' });
+    document.getElementById('prepBody').innerHTML = r.html || '<p>No prep material.</p>';
+    j.has_prep = true;
+  } catch (e) { document.getElementById('prepBody').innerHTML = `<p class="text-rose-600">${esc(e.message)}</p>`; }
+}
+
+async function syncCalendar(j) {
+  try {
+    const r = await api(`/api/jobs/${j.id}/calendar-sync`, { method: 'POST' });
+    toast('Interview saved — downloading calendar file (.ics) with reminders.');
+    location.href = r.ics_url;
+    loadJobs(true);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---------------- success story ---------------- */
+let storyJob = null;
+function openStoryModal(j) {
+  storyJob = j;
+  document.getElementById('storyNew').value = j.job_title;
+  document.getElementById('storyModal').classList.remove('hidden');
+}
+async function submitStory() {
+  try {
+    await api('/api/stories', { method: 'POST', body: {
+      previous_role: document.getElementById('storyPrev').value,
+      new_role: document.getElementById('storyNew').value,
+      new_salary: document.getElementById('storySalary').value,
+      timeframe: document.getElementById('storyTime').value,
+      story: document.getElementById('storyText').value } });
+    closeModal('storyModal');
+    toast('Thank you for sharing — your story is live (anonymously)! 🎉');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---------------- mock interview (voice AI) ---------------- */
+let mock = null;
+const speech = { rec: null, supported: 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window };
+
+function startMock(j) {
+  api(`/api/jobs/${j.id}/mock-interview/start`, { method: 'POST' }).then(r => {
+    mock = { job: j, questions: r.questions, idx: 0, answers: [] };
+    document.getElementById('mockJobTitle').textContent = `${j.job_title} at ${j.company_name}`;
+    document.getElementById('mockModal').classList.remove('hidden');
+    askQuestion();
+  }).catch(e => toast(e.message, 'err'));
+  document.getElementById('mockBody').innerHTML = '<p class="animate-pulse">Preparing tailored questions…</p>';
+  document.getElementById('mockModal').classList.remove('hidden');
+}
+
+function askQuestion() {
+  const q = mock.questions[mock.idx];
+  const body = document.getElementById('mockBody');
+  body.innerHTML = `
+    <div class="text-xs text-gray-500 mb-2">Question ${mock.idx + 1} / ${mock.questions.length}
+      · <span class="uppercase">${esc(q.type || '')}</span></div>
+    <p class="text-lg font-semibold mb-4">${esc(q.question)}</p>
+    <div class="flex items-center gap-2 mb-3">
+      <button id="micBtn" class="tap px-4 py-3 rounded-2xl ${speech.supported ? 'bg-rose-600 text-white' : 'bg-gray-300 text-gray-500'} font-medium"
+        ${speech.supported ? '' : 'disabled'}>🎙️ ${speech.supported ? 'Hold to answer by voice' : 'Voice not supported — type below'}</button>
+      <button onclick="speakQuestion()" class="tap px-3 py-3 rounded-2xl bg-gray-100 dark:bg-gray-700">🔊 Replay</button>
+    </div>
+    <textarea id="answerBox" rows="5" placeholder="Your answer (speak or type)…"
+      class="w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2"></textarea>
+    <div class="flex justify-between mt-3">
+      <span id="recState" class="text-xs text-gray-500"></span>
+      <button onclick="nextQuestion()" class="tap bg-indigo-600 text-white rounded-xl px-5 py-2 font-medium">
+        ${mock.idx + 1 === mock.questions.length ? 'Finish & get feedback' : 'Done — next question'}</button>
+    </div>`;
+  speakQuestion();
+  if (speech.supported) setupMic();
+}
+
+function speakQuestion() {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(mock.questions[mock.idx].question);
+    u.rate = 0.95; speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+function setupMic() {
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = document.getElementById('micBtn');
+  let active = false;
+  const start = () => {
+    if (active) return;
+    try {
+      speech.rec = new Rec();
+      speech.rec.continuous = true; speech.rec.interimResults = true; speech.rec.lang = 'en-US';
+      speech.rec.onresult = ev => {
+        let final = '';
+        for (const res of ev.results) if (res.isFinal) final += res[0].transcript + ' ';
+        const box = document.getElementById('answerBox');
+        if (final) box.value = (box.value + ' ' + final).trim();
+        document.getElementById('recState').textContent = '🎙️ listening…';
+      };
+      speech.rec.onerror = () => { document.getElementById('recState').textContent = 'Mic unavailable — type your answer instead.'; };
+      speech.rec.onend = () => { active = false; btn.classList.remove('animate-pulse'); document.getElementById('recState').textContent = ''; };
+      speech.rec.start(); active = true; btn.classList.add('animate-pulse');
+    } catch (e) { document.getElementById('recState').textContent = 'Mic unavailable — type your answer.'; }
+  };
+  const stop = () => { try { speech.rec && speech.rec.stop(); } catch (e) {} };
+  btn.onmousedown = start; btn.onmouseup = stop; btn.onmouseleave = stop;
+  btn.ontouchstart = e => { e.preventDefault(); start(); };
+  btn.ontouchend = stop;
+}
+
+function nextQuestion() {
+  try { speech.rec && speech.rec.stop(); } catch (e) {}
+  speechSynthesis.cancel();
+  mock.answers.push(document.getElementById('answerBox').value.trim());
+  mock.idx++;
+  if (mock.idx < mock.questions.length) askQuestion();
+  else finishMock();
+}
+
+async function finishMock() {
+  const body = document.getElementById('mockBody');
+  body.innerHTML = '<p class="animate-pulse">Analyzing your answers and writing your report…</p>';
+  try {
+    const r = await api(`/api/jobs/${mock.job.id}/mock-interview/evaluate`, {
+      method: 'POST', body: { questions: mock.questions, responses: mock.answers } });
+    const per = (r.per_question || []).map((p, i) => `
+      <details class="border border-gray-200 dark:border-gray-700 rounded-lg p-2 text-sm">
+        <summary class="tap cursor-pointer">${i + 1}. ${esc(p.question || '')} — content ${p.content_quality}/10, relevance ${p.relevance}/10, specificity ${p.specificity}/10</summary>
+        <p class="mt-1 text-gray-600 dark:text-gray-300">${esc(p.suggestions || '')}</p></details>`).join('');
+    body.innerHTML = `
+      <div class="text-center mb-4">
+        <div class="text-5xl font-bold">${r.overall_score}<span class="text-xl text-gray-400">/100</span></div>
+        <div class="text-2xl font-bold ${r.grade === 'A' || r.grade === 'B' ? 'text-emerald-600' : 'text-amber-600'}">Grade ${r.grade}</div>
+      </div>
+      <p class="text-sm mb-1">🗣️ Filler words: <strong>${r.filler_word_count ?? 0}</strong></p>
+      <p class="text-sm mb-1">⏱️ Pacing: ${esc(r.pacing_assessment || '')}</p>
+      <p class="text-sm mb-3">💪 Confidence: ${esc(r.confidence_assessment || '')}</p>
+      <strong class="text-sm">Top tips:</strong>
+      <ul class="list-disc ml-5 text-sm mb-3">${(r.top_tips || []).map(t => `<li>${esc(t)}</li>`).join('')}</ul>
+      <div class="space-y-2">${per}</div>
+      <button onclick="endMock()" class="tap w-full mt-4 bg-indigo-600 text-white rounded-xl py-2 font-medium">Close</button>`;
+  } catch (e) { body.innerHTML = `<p class="text-rose-600">${esc(e.message)}</p>`; }
+}
+
+function endMock() {
+  try { speech.rec && speech.rec.stop(); } catch (e) {}
+  speechSynthesis.cancel();
+  closeModal('mockModal');
+  mock = null;
+}
+
+/* ---------------- run search now ---------------- */
+let runPoll = null;
+function setRunBtn(running) {
+  const btn = document.getElementById('runNowBtn');
+  btn.disabled = running;
+  btn.innerHTML = running ? '⏳ Searching & ranking…' : '🔍 Find new jobs now';
+}
+async function runSearchNow() {
+  try { await api('/api/run-search', { method: 'POST' }); }
+  catch (e) { toast(e.message, e.message.includes('wait') ? 'warn' : 'err'); return; }
+  setRunBtn(true);
+  toast('Searching all job sources and ranking matches with AI — this takes a minute or two…');
+  watchRun();
+}
+function watchRun() {
+  clearInterval(runPoll);
+  runPoll = setInterval(async () => {
+    try {
+      const s = await api('/api/run-search/status');
+      if (s.running) return;
+      clearInterval(runPoll);
+      setRunBtn(false);
+      const r = s.last_result || {};
+      if (r.error) { toast('Search failed: ' + r.error, 'err'); return; }
+      if (r.skipped === true) { toast('The scheduler is running right now — try again in a few minutes.', 'warn'); return; }
+      if ((r.emailed || 0) > 0) {
+        toast('✅ New matches found and emailed to you — refreshing your list!');
+        loadJobs(true); loadIntelligence().catch(() => {});
+      } else {
+        toast('Search finished — no new qualifying jobs right now (new postings may all duplicate ones you already have, or scored below the match bar).', 'warn');
+        loadIntelligence().catch(() => {});
+      }
+    } catch (e) {}
+  }, 4000);
+}
+
+loadJobs().catch(e => toast(e.message, 'err'));
+loadIntelligence().catch(() => {});
+loadMap().catch(() => {});
+// if a manual run is already in flight (e.g. page reloaded), resume watching it
+api('/api/run-search/status').then(s => { if (s.running) { setRunBtn(true); watchRun(); } }).catch(() => {});
+</script>
+{% endblock %}

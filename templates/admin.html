@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block title %}Admin — Job Search Assistant{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">🛠️ Admin Dashboard</h1>
+
+<div class="flex flex-wrap gap-2 mb-4" id="tabs">
+  <button data-tab="uploads" class="tabbtn">📄 Resume Uploads</button>
+  <button data-tab="users" class="tabbtn">👥 Users</button>
+  <button data-tab="analytics" class="tabbtn">📊 Analytics</button>
+  <button data-tab="deliver" class="tabbtn">📬 Deliverability</button>
+  <button data-tab="tokens" class="tabbtn">🪙 Token Budget</button>
+  <button data-tab="stories" class="tabbtn">🌟 Stories</button>
+  <button data-tab="logs" class="tabbtn">📜 Activity</button>
+</div>
+
+<!-- Uploads -->
+<section id="tab-uploads" class="tabpane bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+  <h2 class="font-bold mb-2">Upload resumes → create users</h2>
+  <p class="text-sm text-gray-500 mb-3">Each resume creates (or updates) a user account using the email found inside it. PDF or DOCX. Drop multiple files for bulk upload.</p>
+  <div id="dropZone" class="border-2 border-dashed border-indigo-300 dark:border-indigo-700 rounded-2xl p-8 text-center cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/30">
+    <div class="text-4xl mb-2">📥</div>
+    <p class="font-medium">Drag &amp; drop resumes here, or click to choose files</p>
+    <input type="file" id="bulkFiles" accept=".pdf,.docx,.txt" multiple class="hidden">
+  </div>
+  <div id="uploadResults" class="mt-4 space-y-2"></div>
+</section>
+
+<!-- Users -->
+<section id="tab-users" class="tabpane hidden bg-white dark:bg-gray-800 rounded-2xl shadow p-5 overflow-x-auto">
+  <h2 class="font-bold mb-3">All users</h2>
+  <table class="w-full text-sm min-w-[640px]">
+    <thead><tr class="text-left text-gray-500 border-b border-gray-200 dark:border-gray-700">
+      <th class="py-2">User</th><th>Status</th><th>Cadence</th><th>Jobs sent</th><th>Last login</th><th>Actions</th></tr></thead>
+    <tbody id="userRows"></tbody>
+  </table>
+</section>
+
+<!-- Analytics -->
+<section id="tab-analytics" class="tabpane hidden space-y-4">
+  <div id="statCards" class="grid grid-cols-2 sm:grid-cols-4 gap-3"></div>
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+    <h3 class="font-bold mb-2">Estimated monthly cost</h3>
+    <p id="costLine" class="text-2xl font-bold"></p>
+    <p class="text-xs text-gray-500 mb-3">Estimates based on current usage patterns. Actual costs may vary.</p>
+    <div id="costBreakdown" class="text-sm space-y-1"></div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+    <h3 class="font-bold mb-2">Needs attention (no recent login)</h3>
+    <div id="needsAttention" class="text-sm"></div>
+  </div>
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+    <h3 class="font-bold mb-2">Run automation manually</h3>
+    <div class="flex flex-wrap gap-2">
+      <button onclick="runNow('main')" class="tap bg-indigo-600 text-white rounded-xl px-4 py-2 text-sm font-medium">▶ Run main cycle now</button>
+      <button onclick="runNow('urgency')" class="tap bg-rose-600 text-white rounded-xl px-4 py-2 text-sm font-medium">🔥 Run urgency check</button>
+      <button onclick="runNow('portfolio')" class="tap bg-emerald-600 text-white rounded-xl px-4 py-2 text-sm font-medium">🖼️ Run portfolio checks</button>
+      <button onclick="runNow('budget')" class="tap bg-amber-600 text-white rounded-xl px-4 py-2 text-sm font-medium">🪙 Run budget check</button>
+      <button onclick="runNow('ats_refresh')" class="tap bg-teal-600 text-white rounded-xl px-4 py-2 text-sm font-medium" title="Re-scans Common Crawl for new employer job boards. Runs automatically when a new monthly index ships.">🔗 Refresh employer link cache</button>
+    </div>
+    <p id="runStatus" class="text-sm mt-2 text-gray-500"></p>
+    <div id="schedulerJobs" class="text-xs text-gray-500 mt-2"></div>
+  </div>
+</section>
+
+<!-- Deliverability -->
+<section id="tab-deliver" class="tabpane hidden bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+  <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+    <h2 class="font-bold">Email deliverability</h2>
+    <select id="deliverDays" onchange="loadDeliver()" class="tap rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm">
+      <option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option>
+    </select>
+  </div>
+  <div id="deliverWarnings"></div>
+  <div class="overflow-x-auto">
+  <table class="w-full text-sm min-w-[560px]">
+    <thead><tr class="text-left text-gray-500 border-b border-gray-200 dark:border-gray-700">
+      <th class="py-2">Email type</th><th>Sent</th><th>Bounce</th><th>Open</th><th>Click</th></tr></thead>
+    <tbody id="deliverRows"></tbody>
+  </table>
+  </div>
+  <p id="deliverNote" class="text-xs text-gray-500 mt-2"></p>
+</section>
+
+<!-- Tokens -->
+<section id="tab-tokens" class="tabpane hidden space-y-4">
+  <div id="tokenCards" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
+  <div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+    <h3 class="font-bold mb-2">Budgets <span class="text-xs font-normal text-gray-500">(alerts go to <span id="alertEmail"></span>)</span></h3>
+    <div class="grid sm:grid-cols-3 gap-2">
+      <label class="text-sm">Daily token budget<input id="budgetDaily" type="number" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mt-1"></label>
+      <label class="text-sm">Monthly token budget<input id="budgetMonthly" type="number" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mt-1"></label>
+      <button onclick="saveBudget()" class="tap self-end bg-indigo-600 text-white rounded-xl px-4 py-2 font-medium">Save budgets</button>
+    </div>
+  </div>
+  <div class="grid lg:grid-cols-2 gap-4">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+      <h3 class="font-bold mb-2">By process (this month)</h3><div id="tokenByProcess" class="text-sm space-y-1"></div>
+    </div>
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+      <h3 class="font-bold mb-2">By user (this month)</h3><div id="tokenByUser" class="text-sm space-y-1"></div>
+    </div>
+  </div>
+</section>
+
+<!-- Stories -->
+<section id="tab-stories" class="tabpane hidden bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+  <h2 class="font-bold mb-3">Success story moderation</h2>
+  <div id="adminStories" class="space-y-3"></div>
+</section>
+
+<!-- Logs -->
+<section id="tab-logs" class="tabpane hidden bg-white dark:bg-gray-800 rounded-2xl shadow p-5">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="font-bold">Automation activity log</h2>
+    <button onclick="loadLogs()" class="tap bg-gray-100 dark:bg-gray-700 rounded-xl px-3 py-2 text-sm">↻ Refresh</button>
+  </div>
+  <div id="logRows" class="text-xs font-mono space-y-1 max-h-[480px] overflow-y-auto"></div>
+</section>
+
+<!-- needs-email modal -->
+<div id="emailModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  <div class="bg-white dark:bg-gray-800 rounded-2xl p-5 max-w-md w-full">
+    <h3 class="font-bold mb-2">Missing email</h3>
+    <p class="text-sm mb-2">No email address was found in <strong id="emailModalFile"></strong>. Enter it manually to finish creating the user:</p>
+    <input id="manualEmail" type="email" placeholder="person@example.com" class="tap w-full rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 mb-3">
+    <div class="flex justify-end gap-2">
+      <button onclick="document.getElementById('emailModal').classList.add('hidden')" class="tap px-4 py-2 rounded-xl bg-gray-200 dark:bg-gray-700">Skip</button>
+      <button onclick="completeUpload()" class="tap px-4 py-2 rounded-xl bg-indigo-600 text-white font-medium">Create user</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* tabs */
+document.querySelectorAll('.tabbtn').forEach(b => {
+  b.classList.add('tap','px-3','py-2','rounded-xl','text-sm','font-medium','bg-white','dark:bg-gray-800','shadow');
+  b.onclick = () => {
+    document.querySelectorAll('.tabpane').forEach(p => p.classList.add('hidden'));
+    document.getElementById('tab-' + b.dataset.tab).classList.remove('hidden');
+    document.querySelectorAll('.tabbtn').forEach(x => x.classList.remove('!bg-indigo-600','text-white'));
+    b.classList.add('!bg-indigo-600','text-white');
+    ({users: loadUsers, analytics: loadAnalytics, deliver: loadDeliver, tokens: loadTokens,
+      stories: loadStories, logs: loadLogs}[b.dataset.tab] || (() => {}))();
+  };
+});
+document.querySelector('.tabbtn').classList.add('!bg-indigo-600','text-white');
+
+/* uploads */
+const dz = document.getElementById('dropZone');
+dz.onclick = () => document.getElementById('bulkFiles').click();
+dz.ondragover = e => { e.preventDefault(); dz.classList.add('bg-indigo-50'); };
+dz.ondragleave = () => dz.classList.remove('bg-indigo-50');
+dz.ondrop = e => { e.preventDefault(); dz.classList.remove('bg-indigo-50'); handleFiles(e.dataTransfer.files); };
+document.getElementById('bulkFiles').onchange = e => handleFiles(e.target.files);
+
+let pendingFile = null;
+async function handleFiles(files) {
+  if (!files.length) return;
+  const out = document.getElementById('uploadResults');
+  out.innerHTML = '<p class="animate-pulse text-sm">Uploading and parsing… (AI parsing can take ~10-20s per resume)</p>';
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  try {
+    const r = await api('/api/admin/bulk-upload', { method: 'POST', body: fd });
+    out.innerHTML = `<p class="font-medium text-sm mb-2">${esc(r.summary)}</p>`;
+    r.results.forEach(res => {
+      const div = document.createElement('div');
+      div.className = 'text-sm rounded-xl p-3 ' + (res.ok ? 'bg-emerald-50 dark:bg-emerald-900/30' : 'bg-rose-50 dark:bg-rose-900/30');
+      if (res.ok) {
+        div.innerHTML = `✅ <strong>${esc(res.filename)}</strong> → ${res.created ? 'created' : 'updated'} user
+          <strong>${esc(res.parsed.full_name || res.parsed.email)}</strong> (${esc(res.parsed.email)})
+          — strength ${res.strength.score}/100 · skills: ${esc((res.parsed.skills || []).slice(0, 6).join(', '))}`;
+      } else if (res.needs_email) {
+        div.innerHTML = `⚠️ <strong>${esc(res.filename)}</strong> — ${esc(res.error)}
+          <button class="underline text-indigo-600 ml-1">Enter email</button>`;
+        div.querySelector('button').onclick = () => {
+          pendingFile = res.pending_file;
+          document.getElementById('emailModalFile').textContent = res.filename;
+          document.getElementById('emailModal').classList.remove('hidden');
+        };
+      } else {
+        div.innerHTML = `❌ <strong>${esc(res.filename)}</strong> — ${esc(res.error)}`;
+      }
+      out.appendChild(div);
+    });
+  } catch (e) { out.innerHTML = `<p class="text-rose-600 text-sm">${esc(e.message)}</p>`; }
+  document.getElementById('bulkFiles').value = '';
+}
+async function completeUpload() {
+  try {
+    await api('/api/admin/complete-upload', { method: 'POST',
+      body: { pending_file: pendingFile, email: document.getElementById('manualEmail').value } });
+    toast('User created');
+    document.getElementById('emailModal').classList.add('hidden');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* users */
+async function loadUsers() {
+  const d = await api('/api/admin/users');
+  const tbody = document.getElementById('userRows');
+  tbody.innerHTML = '';
+  d.users.forEach(u => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-gray-100 dark:border-gray-700';
+    tr.innerHTML = `
+      <td class="py-2"><strong>${esc(u.full_name || '—')}</strong><br><span class="text-xs text-gray-500">${esc(u.email)}</span></td>
+      <td>${u.is_admin ? '<span class="text-xs bg-indigo-100 dark:bg-indigo-900 rounded-full px-2 py-0.5">admin</span> ' : ''}
+          ${u.is_paused ? '<span class="text-xs bg-amber-100 dark:bg-amber-900 rounded-full px-2 py-0.5">⏸ Paused</span>' : '<span class="text-xs bg-emerald-100 dark:bg-emerald-900 rounded-full px-2 py-0.5">Active</span>'}</td>
+      <td class="text-xs">${esc(u.email_frequency || '')}</td>
+      <td>${u.jobs_sent}</td>
+      <td class="text-xs">${esc((u.last_login_at || 'never').slice(0, 10))}</td>
+      <td class="whitespace-nowrap">
+        <button class="tap text-xs px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700" data-act="pause">${u.is_paused ? '▶ Resume' : '⏸ Pause'}</button>
+        <button class="tap text-xs px-2 py-1 rounded-lg bg-indigo-100 dark:bg-indigo-900" data-act="run">Run now</button>
+        <button class="tap text-xs px-2 py-1 rounded-lg bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200" data-act="del">Delete</button>
+      </td>`;
+    tr.querySelector('[data-act=pause]').onclick = async () => {
+      await api(`/api/admin/users/${u.id}/pause`, { method: 'PATCH', body: { paused: !u.is_paused } });
+      loadUsers();
+    };
+    tr.querySelector('[data-act=run]').onclick = async () => {
+      const r = await api('/api/admin/run-automation', { method: 'POST', body: { type: 'main', user_id: u.id } });
+      toast(r.message, r.ok ? 'ok' : 'warn');
+    };
+    tr.querySelector('[data-act=del]').onclick = function () {
+      armConfirm(this, async () => {
+        try { await api(`/api/admin/users/${u.id}`, { method: 'DELETE' }); loadUsers(); }
+        catch (e) { toast(e.message, 'err'); }
+      });
+    };
+    tbody.appendChild(tr);
+  });
+}
+
+/* analytics */
+async function loadAnalytics() {
+  const d = await api('/api/admin/analytics');
+  const cards = [
+    ['Users', `${d.users.total} <span class="text-sm font-normal">(${d.users.paused || 0} paused)</span>`],
+    ['Active 7d / 30d', `${d.users.active_7d || 0} / ${d.users.active_30d || 0}`],
+    ['Jobs sent (7d / 30d / all)', `${d.jobs.last_7d || 0} / ${d.jobs.last_30d || 0} / ${d.jobs.total || 0}`],
+    ['Emails 30d (bounced)', `${d.emails.sent || 0} <span class="text-sm font-normal">(${d.emails.bounced || 0})</span>`],
+    ['Applications', d.pipeline.applied || 0], ['Interviews', d.pipeline.interviews || 0],
+    ['Offers', d.pipeline.offers || 0], ['Rejections', d.pipeline.rejected || 0],
+  ];
+  document.getElementById('statCards').innerHTML = cards.map(([l, v]) =>
+    `<div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4"><div class="text-2xl font-bold">${v}</div><div class="text-xs text-gray-500">${l}</div></div>`).join('');
+  document.getElementById('costLine').textContent = `$${d.projected_monthly_cost} / month (last 30 days: ${(d.tokens_30d.t || 0).toLocaleString()} tokens)`;
+  document.getElementById('costBreakdown').innerHTML = (d.token_breakdown || []).map(b =>
+    `<div class="flex justify-between"><span>${esc(b.process_type)}</span><span>${(b.tokens || 0).toLocaleString()} tok · $${(b.cost || 0).toFixed(2)}</span></div>`).join('') || '<span class="text-gray-500">No AI usage recorded yet.</span>';
+  document.getElementById('needsAttention').innerHTML = (d.needs_attention || []).map(u =>
+    `<div>⚠️ ${esc(u.email)} — last login ${esc((u.last_login_at || 'never').slice(0, 10))}</div>`).join('') || '<span class="text-emerald-600">Everyone has logged in recently 🎉</span>';
+  document.getElementById('schedulerJobs').innerHTML = 'Scheduled: ' + ((d.scheduler_jobs || []).map(j => `${esc(j.id)} → ${esc(j.next_run)}`).join(' · ') || 'scheduler disabled') +
+    `<br>Email mode: <strong>${esc(d.email_mode)}</strong> · Search: <strong>${esc((d.search_providers || []).join(', '))}</strong> · AI: <strong>${d.llm_available ? 'Claude connected' : 'heuristic fallback (no key)'}</strong>`;
+}
+let pollTimer = null;
+async function runNow(type) {
+  const r = await api('/api/admin/run-automation', { method: 'POST', body: { type } });
+  toast(r.message, r.ok ? 'ok' : 'warn');
+  document.getElementById('runStatus').textContent = 'Running…';
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const s = await api('/api/admin/run-status');
+    if (!s.running) {
+      clearInterval(pollTimer);
+      document.getElementById('runStatus').textContent = 'Finished: ' + JSON.stringify(s.last_result);
+      loadLogs().catch(() => {});
+    }
+  }, 3000);
+}
+
+/* deliverability */
+async function loadDeliver() {
+  const d = await api('/api/admin/email-deliverability?days=' + document.getElementById('deliverDays').value);
+  document.getElementById('deliverWarnings').innerHTML = (d.warnings || []).map(w =>
+    `<div class="bg-rose-100 dark:bg-rose-900 text-rose-800 dark:text-rose-100 rounded-xl p-3 text-sm mb-2 font-medium">🚨 ${esc(w)}</div>`).join('');
+  document.getElementById('deliverRows').innerHTML = (d.by_type || []).map(r =>
+    `<tr class="border-b border-gray-100 dark:border-gray-700"><td class="py-2">${esc(r.email_type)}</td>
+     <td>${r.sent}</td><td>${r.bounce_rate}%</td><td>${r.open_rate}%</td><td>${r.click_rate}%</td></tr>`).join('') ||
+    '<tr><td colspan="5" class="py-3 text-gray-500">No emails sent in this window.</td></tr>';
+  document.getElementById('deliverNote').textContent = d.note;
+}
+
+/* tokens */
+async function loadTokens() {
+  const d = await api('/api/admin/token-usage');
+  document.getElementById('tokenCards').innerHTML = [
+    ['Today', `${(d.daily.tokens || 0).toLocaleString()} tok · $${(d.daily.cost || 0).toFixed(2)}`],
+    ['This month', `${(d.monthly.tokens || 0).toLocaleString()} tok · $${(d.monthly.cost || 0).toFixed(2)}`],
+    ['Projected monthly cost', `$${d.projected_monthly_cost}`],
+  ].map(([l, v]) => `<div class="bg-white dark:bg-gray-800 rounded-2xl shadow p-4"><div class="text-xl font-bold">${v}</div><div class="text-xs text-gray-500">${l}</div></div>`).join('');
+  document.getElementById('budgetDaily').value = d.budgets.daily;
+  document.getElementById('budgetMonthly').value = d.budgets.monthly;
+  document.getElementById('alertEmail').textContent = d.alert_email;
+  document.getElementById('tokenByProcess').innerHTML = (d.by_process || []).map(p =>
+    `<div class="flex justify-between"><span>${esc(p.process_type)}</span><span>${(p.tokens || 0).toLocaleString()} tok · $${(p.cost || 0).toFixed(2)}</span></div>`).join('') || '<span class="text-gray-500">No usage yet.</span>';
+  document.getElementById('tokenByUser').innerHTML = (d.by_user || []).map(u =>
+    `<div class="flex justify-between"><span>${esc(u.email || 'system')}</span><span>${(u.tokens || 0).toLocaleString()} tok · $${(u.cost || 0).toFixed(2)}</span></div>`).join('') || '<span class="text-gray-500">No usage yet.</span>';
+}
+async function saveBudget() {
+  await api('/api/admin/token-budget', { method: 'PUT', body: {
+    daily: parseInt(document.getElementById('budgetDaily').value || '0'),
+    monthly: parseInt(document.getElementById('budgetMonthly').value || '0') } });
+  toast('Budgets saved');
+}
+
+/* stories */
+async function loadStories() {
+  const d = await api('/api/admin/stories');
+  document.getElementById('adminStories').innerHTML = '';
+  d.stories.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'border border-gray-200 dark:border-gray-700 rounded-xl p-3 text-sm';
+    div.innerHTML = `
+      <div class="flex justify-between gap-2 flex-wrap">
+        <strong>${esc(s.previous_role || '?')} → ${esc(s.new_role)}</strong>
+        <span class="${s.is_approved ? 'text-emerald-600' : 'text-amber-600'} text-xs">${s.is_approved ? 'visible' : 'hidden'}</span>
+      </div>
+      <p class="mt-1">${esc(s.story || '')}</p>
+      <p class="text-xs text-gray-500 mt-1">submitted by ${esc(s.submitter_email || '(deleted user — anonymous)')} on ${esc((s.created_at || '').slice(0, 10))}</p>
+      <div class="mt-2 flex gap-2">
+        <button class="tap text-xs px-2 py-1 rounded-lg bg-gray-100 dark:bg-gray-700" data-act="toggle">${s.is_approved ? 'Hide' : 'Approve'}</button>
+        <button class="tap text-xs px-2 py-1 rounded-lg bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-200" data-act="del">Remove</button>
+      </div>`;
+    div.querySelector('[data-act=toggle]').onclick = async () => {
+      await api(`/api/admin/stories/${s.id}`, { method: 'PATCH', body: { approved: !s.is_approved } }); loadStories();
+    };
+    div.querySelector('[data-act=del]').onclick = function () {
+      armConfirm(this, async () => { await api(`/api/admin/stories/${s.id}`, { method: 'DELETE' }); loadStories(); });
+    };
+    document.getElementById('adminStories').appendChild(div);
+  });
+  if (!d.stories.length) document.getElementById('adminStories').innerHTML = '<p class="text-gray-500 text-sm">No stories submitted yet.</p>';
+}
+
+/* logs */
+async function loadLogs() {
+  const d = await api('/api/admin/logs?limit=200');
+  document.getElementById('logRows').innerHTML = d.logs.map(l =>
+    `<div><span class="text-gray-400">${esc(l.created_at)}</span> <span class="text-indigo-500">[${esc(l.run_type)}${l.user_id ? ' u' + l.user_id : ''}]</span> ${esc(l.message)}</div>`).join('') ||
+    '<p class="text-gray-500">No activity yet.</p>';
+}
+</script>
+{% endblock %}

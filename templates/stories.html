@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Success Stories — Job Search Assistant{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-1">🌟 Success Stories</h1>
+<p class="text-sm text-gray-500 dark:text-gray-400 mb-5">Real, fully anonymized wins from people using this system. When you mark a job "Offer Received", you can share yours too.</p>
+<div id="storyFeed" class="grid sm:grid-cols-2 gap-4"></div>
+<p id="noStories" class="hidden text-center text-gray-500 py-10">No stories yet — be the first to land an offer and share it! 🎉</p>
+{% endblock %}
+{% block scripts %}
+<script>
+api('/api/stories').then(d => {
+  const feed = document.getElementById('storyFeed');
+  if (!d.stories.length) { document.getElementById('noStories').classList.remove('hidden'); return; }
+  d.stories.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'bg-white dark:bg-gray-800 rounded-2xl shadow p-4';
+    div.innerHTML = `
+      <div class="flex items-center gap-2 text-sm font-semibold flex-wrap">
+        ${s.previous_role ? `<span class="bg-gray-100 dark:bg-gray-700 rounded-full px-3 py-1">${esc(s.previous_role)}</span><span>→</span>` : ''}
+        <span class="bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-200 rounded-full px-3 py-1">${esc(s.new_role)}</span>
+      </div>
+      <div class="text-xs text-gray-500 mt-2">
+        ${s.new_salary ? '💰 ' + esc(s.new_salary) + ' · ' : ''}${s.timeframe ? '⏱️ Found in ' + esc(s.timeframe) + ' · ' : ''}${esc((s.created_at || '').slice(0, 10))}
+      </div>
+      ${s.story ? `<p class="text-sm mt-2">${esc(s.story)}</p>` : ''}`;
+    feed.appendChild(div);
+  });
+}).catch(e => toast(e.message, 'err'));
+</script>
+{% endblock %}

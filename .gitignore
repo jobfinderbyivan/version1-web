@@ -1,0 +1,28 @@
+# ===== Secrets — NEVER commit =====
+.env
+.env.*
+!.env.example
+
+# ===== Personal data / runtime state (lives on the Railway volume, not git) =====
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ===== Python =====
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ===== Editor / OS =====
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Keep the committed seed (seed/company_ats_cache.json) — public ATS mappings only

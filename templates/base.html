@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en" class="{{ 'dark' if dark else '' }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Job Search Assistant{% endblock %}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' };</script>
+<style>
+  body { -webkit-tap-highlight-color: transparent; }
+  .tap { min-height: 44px; min-width: 44px; }
+  input[type=checkbox], input[type=radio] { width: 20px; height: 20px; }
+  .card { @apply bg-white dark:bg-gray-800 rounded-2xl shadow p-4; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen pb-20 md:pb-6">
+
+<header class="bg-indigo-600 dark:bg-indigo-800 text-white sticky top-0 z-40 shadow">
+  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+    <a href="/profile" class="font-bold text-lg">🎯 Job Search Assistant</a>
+    <nav class="hidden md:flex items-center gap-1">
+      <a href="/profile" class="tap px-3 py-2 rounded-lg hover:bg-indigo-500 flex items-center">Profile</a>
+      <a href="/jobs" class="tap px-3 py-2 rounded-lg hover:bg-indigo-500 flex items-center">Jobs</a>
+      <a href="/stories" class="tap px-3 py-2 rounded-lg hover:bg-indigo-500 flex items-center">Stories</a>
+      {% if is_admin %}<a href="/admin" class="tap px-3 py-2 rounded-lg hover:bg-indigo-500 flex items-center">Admin</a>{% endif %}
+      <button onclick="toggleDark()" class="tap px-3 py-2 rounded-lg hover:bg-indigo-500" title="Toggle dark mode">
+        <span id="darkIcon">{{ '☀️' if dark else '🌙' }}</span>
+      </button>
+      <button onclick="logout()" class="tap px-3 py-2 rounded-lg hover:bg-indigo-500">Log out</button>
+    </nav>
+    <button onclick="toggleDark()" class="md:hidden tap px-2" title="Toggle dark mode">
+      <span id="darkIconM">{{ '☀️' if dark else '🌙' }}</span>
+    </button>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-3 sm:px-4 py-4">
+{% block content %}{% endblock %}
+</main>
+
+<!-- Mobile bottom tab bar (thumb-friendly) -->
+<nav class="md:hidden fixed bottom-0 inset-x-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 flex z-40">
+  <a href="/profile" class="flex-1 tap py-2 text-center text-xs flex flex-col items-center justify-center"><span class="text-xl">👤</span>Profile</a>
+  <a href="/jobs" class="flex-1 tap py-2 text-center text-xs flex flex-col items-center justify-center"><span class="text-xl">💼</span>Jobs</a>
+  <a href="/stories" class="flex-1 tap py-2 text-center text-xs flex flex-col items-center justify-center"><span class="text-xl">🌟</span>Stories</a>
+  {% if is_admin %}<a href="/admin" class="flex-1 tap py-2 text-center text-xs flex flex-col items-center justify-center"><span class="text-xl">🛠️</span>Admin</a>{% endif %}
+  <button onclick="logout()" class="flex-1 tap py-2 text-center text-xs flex flex-col items-center justify-center"><span class="text-xl">🚪</span>Out</button>
+</nav>
+
+<div id="toasts" class="fixed top-16 inset-x-0 z-50 flex flex-col items-center gap-2 pointer-events-none px-4"></div>
+
+<script>
+async function api(path, opts = {}) {
+  const init = { headers: {}, credentials: 'same-origin', ...opts };
+  if (init.body && typeof init.body === 'object' && !(init.body instanceof FormData)) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(init.body);
+  }
+  const resp = await fetch(path, init);
+  if (resp.status === 401) { location.href = '/login'; throw new Error('unauthenticated'); }
+  let data = null;
+  try { data = await resp.json(); } catch (e) {}
+  if (!resp.ok) {
+    const msg = (data && (data.detail || data.error)) || ('Request failed (' + resp.status + ')');
+    throw new Error(msg);
+  }
+  return data;
+}
+function toast(msg, kind = 'ok') {
+  const el = document.createElement('div');
+  el.className = 'pointer-events-auto px-4 py-3 rounded-xl shadow-lg text-sm font-medium max-w-md ' +
+    (kind === 'ok' ? 'bg-emerald-600 text-white' : kind === 'warn' ? 'bg-amber-500 text-white' : 'bg-rose-600 text-white');
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+async function toggleDark() {
+  const root = document.documentElement;
+  const dark = !root.classList.contains('dark');
+  root.classList.toggle('dark', dark);
+  for (const id of ['darkIcon', 'darkIconM']) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = dark ? '☀️' : '🌙';
+  }
+  try { await api('/api/profile', { method: 'PUT', body: { dark_mode: dark } }); } catch (e) {}
+}
+async function logout() {
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+  location.href = '/login';
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+/* Two-step confirm that works where native confirm() dialogs are blocked
+   (embedded preview panels, sandboxed iframes): first click arms the button,
+   second click within 3.5s executes. */
+function armConfirm(btn, fn) {
+  if (btn.dataset.armed) {
+    delete btn.dataset.armed;
+    btn.innerHTML = btn.dataset.orig;
+    fn();
+    return;
+  }
+  btn.dataset.armed = '1';
+  btn.dataset.orig = btn.innerHTML;
+  btn.innerHTML = '⚠ Sure?';
+  setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.innerHTML = btn.dataset.orig; } }, 3500);
+}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
