@@ -47,11 +47,14 @@ EMAIL_MODE = env("EMAIL_MODE", "auto").lower()
 # Resend (https://resend.com) — HTTP email API on port 443. Required on hosts
 # like Railway/Render/Fly that block outbound SMTP ports. Preferred when set.
 RESEND_API_KEY = env("RESEND_API_KEY")
-# Sender for the HTTP API, e.g. "JobFinder <login@jobfinderbyivan.com>".
+# Sender for the HTTP API. Set just the bare address, e.g.
+# EMAIL_FROM=login@jobfinderbyivan.com  (no display name, no angle brackets —
+# those break some env-var editors). The display name (SMTP_FROM_NAME) is added
+# automatically. You CAN still pass a full "Name <email>" value if you prefer.
 # Defaults to Resend's onboarding domain, which works immediately but only
 # delivers to the email you registered your Resend account with (great for the
-# admin's first test; verify your own domain for sending to everyone).
-EMAIL_FROM = env("EMAIL_FROM", "JobFinder <onboarding@resend.dev>")
+# admin's first test; verify your own domain to send to everyone).
+EMAIL_FROM = env("EMAIL_FROM", "onboarding@resend.dev")
 SMTP_HOST = env("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(env("SMTP_PORT", "587") or 587)
 SMTP_USER = env("SMTP_USER")

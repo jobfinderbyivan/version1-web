@@ -83,6 +83,15 @@ def send(user: dict, email_type: str, subject: str, html_body: str,
     return ok
 
 
+def _resend_from() -> str:
+    """Build the Resend 'from' value. Accepts either a bare address (adds the
+    display name automatically) or a full 'Name <email>' value."""
+    sender = (config.EMAIL_FROM or "onboarding@resend.dev").strip()
+    if "<" in sender:
+        return sender  # already a full "Name <email>" value
+    return f"{config.SMTP_FROM_NAME} <{sender}>"
+
+
 def _send_resend(to_addr: str, subject: str, html_body: str) -> tuple:
     """Send via the Resend HTTPS API (port 443 — works on hosts that block
     SMTP). Returns (ok, bounced)."""
@@ -91,7 +100,7 @@ def _send_resend(to_addr: str, subject: str, html_body: str) -> tuple:
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {config.RESEND_API_KEY}",
                      "Content-Type": "application/json"},
-            json={"from": config.EMAIL_FROM, "to": [to_addr],
+            json={"from": _resend_from(), "to": [to_addr],
                   "subject": subject, "html": html_body},
             timeout=20)
         if resp.status_code in (200, 201):
