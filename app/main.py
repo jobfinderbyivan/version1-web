@@ -109,3 +109,17 @@ def click_redirect(u: str = "", t: str = ""):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/debug/email-config")
+def debug_email_config():
+    """TEMPORARY deploy diagnostic — booleans only, no secret values. Reports
+    how the running instance resolves its email provider."""
+    return {
+        "email_mode_raw": config.EMAIL_MODE,
+        "effective_email_mode": config.effective_email_mode(),
+        "resend_key_set": bool(config.RESEND_API_KEY),
+        "smtp_creds_set": bool(config.SMTP_USER and config.SMTP_PASSWORD),
+        "email_from": config.EMAIL_FROM,
+        "app_base_url": config.APP_BASE_URL,
+    }
