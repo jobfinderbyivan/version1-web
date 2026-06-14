@@ -450,6 +450,26 @@ def _migrate(conn) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(company_ats_cache)").fetchall()}
     if "domain" not in cols:
         conn.execute("ALTER TABLE company_ats_cache ADD COLUMN domain TEXT")
+    _backfill_missing_locations(conn)
+
+
+def _backfill_missing_locations(conn) -> None:
+    """Earlier builds of the self-upload path didn't apply the resume's parsed
+    location to the profile. Backfill city/state from stored resume text for any
+    user missing a city — a cheap regex, no LLM, idempotent (won't re-touch once
+    a city is set)."""
+    import re as _re
+    rows = conn.execute(
+        "SELECT id, resume_raw_text FROM users "
+        "WHERE (city IS NULL OR city = '') AND resume_raw_text IS NOT NULL "
+        "AND resume_raw_text != ''").fetchall()
+    for r in rows:
+        m = _re.search(r"([A-Z][A-Za-z .'-]+),\s*([A-Z]{2})\b", r["resume_raw_text"] or "")
+        if m:
+            city, state = m.group(1).strip()[:255], m.group(2)
+            conn.execute("UPDATE users SET city = ?, state = ?, "
+                         "home_address = COALESCE(NULLIF(home_address,''), ?) WHERE id = ?",
+                         (city, state, f"{city}, {state}", r["id"]))
 
 
 def _bootstrap_admin() -> None:

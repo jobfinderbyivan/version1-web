@@ -457,14 +457,27 @@ async def upload_resume(request: Request, file: UploadFile = File(...), label: s
                "resume_advice_pending = 1", "updated_at = ?"]
     params = [strength["score"], strength.get("summary", ""), db.jdumps(merged_skills), db.now()]
     if is_primary:
-        updates += ["resume_file_path = ?", "resume_raw_text = ?", "experience_level = ?"]
-        params += [str(path), raw_text, parsed.get("experience_level")]
-    if parsed.get("linkedin_url") and not user.get("linkedin_url"):
-        updates.append("linkedin_url = ?")
-        params.append(parsed["linkedin_url"])
+        updates += ["resume_file_path = ?", "resume_raw_text = ?", "experience_level = ?",
+                    "work_history = ?"]
+        params += [str(path), raw_text, parsed.get("experience_level"),
+                   db.jdumps(parsed.get("work_history") or [])]
+    # Auto-apply parsed location and links to the profile when the user hasn't
+    # set them — the location is required for job search to work.
+    def _fill(field, value):
+        if value and not (user.get(field) or "").strip():
+            updates.append(f"{field} = ?")
+            params.append(value)
+    _fill("city", parsed.get("city"))
+    _fill("state", parsed.get("state"))
+    _fill("home_address", parsed.get("city") and
+          ", ".join(p for p in (parsed.get("city"), parsed.get("state")) if p))
+    _fill("linkedin_url", parsed.get("linkedin_url"))
+    _fill("portfolio_url", parsed.get("portfolio_url"))
     params.append(user["id"])
     db.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", tuple(params))
-    return {"ok": True, "strength": strength, "parsed_skills": parsed.get("skills") or []}
+    out_user = db.query_one("SELECT city, state FROM users WHERE id = ?", (user["id"],))
+    return {"ok": True, "strength": strength, "parsed_skills": parsed.get("skills") or [],
+            "city": out_user["city"], "state": out_user["state"]}
 
 
 @router.delete("/api/resumes/{resume_id}")
