@@ -111,16 +111,20 @@ MODEL_PRICING = {
 
 
 def effective_email_mode() -> str:
-    # Explicit override wins.
-    if EMAIL_MODE in ("resend", "smtp", "outbox"):
-        if EMAIL_MODE == "resend" and not RESEND_API_KEY:
-            return "outbox"
-        if EMAIL_MODE == "smtp" and not (SMTP_USER and SMTP_PASSWORD):
-            return "outbox"
-        return EMAIL_MODE
-    # auto: prefer Resend (works on SMTP-blocked hosts), then SMTP, then outbox.
+    # Explicit outbox (dev) always wins — lets you force file output.
+    if EMAIL_MODE == "outbox":
+        return "outbox"
+    # A configured Resend key takes precedence over everything else: SMTP is
+    # blocked on most cloud hosts (Railway/Render/Fly), so a present
+    # RESEND_API_KEY is a clear signal to use the HTTPS API — even if a stale
+    # EMAIL_MODE=smtp is still set.
     if RESEND_API_KEY:
         return "resend"
+    if EMAIL_MODE == "smtp":
+        return "smtp" if (SMTP_USER and SMTP_PASSWORD) else "outbox"
+    if EMAIL_MODE == "resend":
+        return "outbox"  # asked for resend but no key
+    # auto, no resend key:
     if SMTP_USER and SMTP_PASSWORD:
         return "smtp"
     return "outbox"
