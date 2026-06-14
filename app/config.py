@@ -44,6 +44,14 @@ ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY")
 LLM_MODEL = env("LLM_MODEL", "claude-opus-4-8")
 
 EMAIL_MODE = env("EMAIL_MODE", "auto").lower()
+# Resend (https://resend.com) — HTTP email API on port 443. Required on hosts
+# like Railway/Render/Fly that block outbound SMTP ports. Preferred when set.
+RESEND_API_KEY = env("RESEND_API_KEY")
+# Sender for the HTTP API, e.g. "JobFinder <login@jobfinderbyivan.com>".
+# Defaults to Resend's onboarding domain, which works immediately but only
+# delivers to the email you registered your Resend account with (great for the
+# admin's first test; verify your own domain for sending to everyone).
+EMAIL_FROM = env("EMAIL_FROM", "JobFinder <onboarding@resend.dev>")
 SMTP_HOST = env("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(env("SMTP_PORT", "587") or 587)
 SMTP_USER = env("SMTP_USER")
@@ -103,11 +111,19 @@ MODEL_PRICING = {
 
 
 def effective_email_mode() -> str:
-    if EMAIL_MODE == "smtp":
+    # Explicit override wins.
+    if EMAIL_MODE in ("resend", "smtp", "outbox"):
+        if EMAIL_MODE == "resend" and not RESEND_API_KEY:
+            return "outbox"
+        if EMAIL_MODE == "smtp" and not (SMTP_USER and SMTP_PASSWORD):
+            return "outbox"
+        return EMAIL_MODE
+    # auto: prefer Resend (works on SMTP-blocked hosts), then SMTP, then outbox.
+    if RESEND_API_KEY:
+        return "resend"
+    if SMTP_USER and SMTP_PASSWORD:
         return "smtp"
-    if EMAIL_MODE == "outbox":
-        return "outbox"
-    return "smtp" if (SMTP_USER and SMTP_PASSWORD) else "outbox"
+    return "outbox"
 
 
 def search_provider_names() -> list:

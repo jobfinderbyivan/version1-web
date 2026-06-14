@@ -1,7 +1,10 @@
 """Email delivery.
 
-Two modes:
-  smtp   - real delivery via Gmail SMTP (app password in .env)
+Three modes (auto-selected; see config.effective_email_mode):
+  resend - Resend HTTPS API (port 443). Use on hosts that block SMTP (Railway,
+           Render, Fly). Set RESEND_API_KEY + EMAIL_FROM.
+  smtp   - real delivery via Gmail SMTP (app password). Works locally; blocked
+           on most cloud PaaS.
   outbox - writes each email as an .html file under data/outbox (dev mode);
            OTP codes and job emails can be read there without any account.
 
@@ -17,6 +20,8 @@ import smtplib
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import httpx
 
 from . import config, db
 
@@ -61,7 +66,9 @@ def send(user: dict, email_type: str, subject: str, html_body: str,
     mode = config.effective_email_mode()
     bounced = False
     ok = True
-    if mode == "smtp":
+    if mode == "resend":
+        ok, bounced = _send_resend(user["email"], subject, html_body)
+    elif mode == "smtp":
         ok, bounced = _send_smtp(user["email"], subject, html_body)
     else:
         _write_outbox(user["email"], email_type, subject, html_body)
@@ -76,6 +83,27 @@ def send(user: dict, email_type: str, subject: str, html_body: str,
     return ok
 
 
+def _send_resend(to_addr: str, subject: str, html_body: str) -> tuple:
+    """Send via the Resend HTTPS API (port 443 — works on hosts that block
+    SMTP). Returns (ok, bounced)."""
+    try:
+        resp = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {config.RESEND_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"from": config.EMAIL_FROM, "to": [to_addr],
+                  "subject": subject, "html": html_body},
+            timeout=20)
+        if resp.status_code in (200, 201):
+            return True, False
+        log.warning("Resend send failed to %s: %s %s", to_addr, resp.status_code, resp.text[:200])
+        # 422/403 typically = unverified domain or 'from' not allowed → treat as bounce
+        return False, resp.status_code in (403, 422)
+    except Exception:
+        log.exception("Resend request failed to %s", to_addr)
+        return False, False
+
+
 def _send_smtp(to_addr: str, subject: str, html_body: str) -> tuple:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -84,7 +112,7 @@ def _send_smtp(to_addr: str, subject: str, html_body: str) -> tuple:
     msg.attach(MIMEText(re.sub(r"<[^>]+>", " ", html_body), "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
-        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=30) as server:
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=12) as server:
             server.starttls()
             server.login(config.SMTP_USER, config.SMTP_PASSWORD)
             refused = server.sendmail(config.SMTP_FROM, [to_addr], msg.as_string())
