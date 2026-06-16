@@ -106,10 +106,12 @@ CACHED_JOB_TTL_DAYS = int(env("CACHED_JOB_TTL_DAYS", "4") or 4)
 CACHE_TARGET_STATE = env("CACHE_TARGET_STATE", "UT").upper()
 AUTOMATION_HOUR = int(env("AUTOMATION_HOUR", "11") or 11)
 SCHEDULER_ENABLED = env_bool("SCHEDULER_ENABLED", True)
-# Listings older than this are discarded. Job APIs often index postings days
-# after publication, so the spec's 3-day window is too strict in practice;
-# dedup still guarantees no job is ever sent twice.
-SEARCH_RECENCY_DAYS = int(env("SEARCH_RECENCY_DAYS", "7") or 7)
+# Max age (days) for listings from the live job APIs (Adzuna/JSearch/TheirStack/
+# USAJOBS). A hard cap — the local board cache separately covers still-open
+# postings of any age, so the API side stays strictly fresh (spec's 3-day rule).
+# Does NOT affect the board cache (those rows are "currently open" regardless of
+# when first posted).
+SEARCH_RECENCY_DAYS = int(env("SEARCH_RECENCY_DAYS", "3") or 3)
 
 SESSION_DAYS = 7
 OTP_TTL_MINUTES = 10

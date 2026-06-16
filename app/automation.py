@@ -243,15 +243,15 @@ def process_user(user) -> bool:
         for q in queries:
             raw_jobs += job_search.search_jobs(q, user.get("city") or "", user.get("state") or "",
                                                remote=False, radius_miles=user.get("search_radius_miles") or 15,
-                                               max_days_old=max(days, config.SEARCH_RECENCY_DAYS))
+                                               max_days_old=config.SEARCH_RECENCY_DAYS)
     if remote_ok:
         for q in queries[:3]:  # spec: 2-3 queries for country-wide remote search
             raw_jobs += job_search.search_jobs(q, user.get("city") or "", user.get("state") or "",
-                                               remote=True, max_days_old=max(days, config.SEARCH_RECENCY_DAYS))
+                                               remote=True, max_days_old=config.SEARCH_RECENCY_DAYS)
     if disability["detected"]:
         for q in disability.get("extra_queries", [])[:2]:  # additive only
             raw_jobs += job_search.search_jobs(q, user.get("city") or "", user.get("state") or "",
-                                               remote=remote_ok, max_days_old=max(days, config.SEARCH_RECENCY_DAYS))
+                                               remote=remote_ok, max_days_old=config.SEARCH_RECENCY_DAYS)
     api_count = len(raw_jobs)
 
     # Local board cache: the day's open postings on Utah employers' own ATS
@@ -262,7 +262,7 @@ def process_user(user) -> bool:
     db.log("main", uid, f"Collected {len(raw_jobs)} raw listings "
                         f"({api_count} from APIs, {len(cache_jobs)} from board cache)")
 
-    candidates = _filter_candidates(user, raw_jobs, days)
+    candidates = _filter_candidates(user, raw_jobs)
     db.log("main", uid, f"{len(candidates)} candidates after filters/dedup")
     if not candidates:
         db.log("main", uid, "No qualifying jobs this cycle — no email sent")
@@ -324,7 +324,7 @@ def process_user(user) -> bool:
     return True
 
 
-def _filter_candidates(user, raw_jobs, days) -> list:
+def _filter_candidates(user, raw_jobs) -> list:
     uid = user["id"]
     blacklist = db.jloads(user.get("blacklisted_companies"), [])
     whitelist = db.jloads(user.get("whitelisted_companies"), [])
@@ -354,7 +354,7 @@ def _filter_candidates(user, raw_jobs, days) -> list:
             _merge_duplicate(seen_batch[key], job)
             continue
         seen_batch[key] = job
-        if job.get("posted_days_ago", 0) > max(days, config.SEARCH_RECENCY_DAYS):
+        if job.get("posted_days_ago", 0) > config.SEARCH_RECENCY_DAYS:
             continue
 
         signals = job_search.detect_signals(title, job.get("description"))
@@ -633,7 +633,7 @@ def _urgency_for_user(user) -> bool:
     for q in queries[:2]:  # 1-2 lightweight queries only
         raw += job_search.search_jobs(q, user.get("city") or "", user.get("state") or "",
                                       remote=bool(user.get("job_type_remote")), max_days_old=2)
-    candidates = _filter_candidates(user, raw, days=2)
+    candidates = _filter_candidates(user, raw)
     urgent = [j for j in candidates if j.get("urgency_hits", 0) >= 1 and
               (j.get("urgency_hits", 0) >= 2 or _deadline_within(j, 3) or j.get("is_urgent"))]
     if not urgent:
