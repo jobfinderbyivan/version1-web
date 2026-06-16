@@ -23,8 +23,25 @@ from datetime import datetime, timedelta
 import httpx
 
 from . import config, db
+from .job_search import US_STATE_NAMES
 
 log = logging.getLogger("links")
+
+_STATE_BY_NAME = {v.lower(): k for k, v in US_STATE_NAMES.items()}
+_STATE_CODES = set(US_STATE_NAMES)
+
+
+def _state_code(token: str):
+    t = (token or "").strip()
+    if not t:
+        return None
+    if t.upper() in _STATE_CODES:
+        return t.upper()
+    return _STATE_BY_NAME.get(t.lower())
+
+
+def _loc_is_remote(s: str) -> bool:
+    return bool(re.search(r"\bremote\b|\banywhere\b|work from home|\bwfh\b", s or "", re.I))
 
 import sys as _sys
 if hasattr(_sys.stdout, "reconfigure"):  # ensure tool output never crashes on non-ASCII
@@ -585,6 +602,199 @@ _DETAILED_FETCHERS = {
     "recruitee": _recruitee_detailed, "bamboohr": _bamboohr_detailed,
     "workday": _workday_detailed, "icims": _icims_detailed,
 }
+
+
+# ------------------------------------------ state-filtered + enriched fetch --
+# Workday/SmartRecruiters/BambooHR expose huge boards (Workday alone ~640k
+# postings across the cache, only ~4% in Utah) and omit the description from
+# their list feed. For the daily cache we instead pull ONLY the target-state (+
+# remote) postings from these platforms, then enrich each with a per-job detail
+# request to recover the full description and precise location. The full-detail
+# platforms (Greenhouse/Lever/Ashby/Workable/Recruitee) already return
+# descriptions in one request, so they go through fetch_board_detailed and the
+# crawl trims them to the target state afterwards.
+#
+# Stubs returned here carry an "_enrich" dict telling enrich_job() how to fetch
+# the per-job detail; the crawl enriches them concurrently in a second phase.
+
+_STATE_FILTERED = {"workday", "smartrecruiters", "bamboohr"}
+
+_CXS_HEADERS = {"User-Agent": "Mozilla/5.0 (JobSearchAssistant link check)",
+                "Content-Type": "application/json"}
+
+
+def fetch_board_for_cache(ats: str, slug: str, state_name: str, state_code: str) -> list:
+    """Return cache-ready job dicts for `slug`. For the big partial-detail
+    platforms this is pre-filtered to `state_name`/remote with an enrichment
+    handle attached; for the rest it's the full detailed board."""
+    try:
+        if ats == "workday":
+            return _workday_state_stubs(slug, state_name, state_code)
+        if ats == "smartrecruiters":
+            return _sr_state_stubs(slug, state_code)
+        if ats == "bamboohr":
+            return _bamboohr_state_stubs(slug, state_code)
+        return fetch_board_detailed(ats, slug)
+    except Exception:
+        log.debug("Cache fetch failed for %s/%s", ats, slug, exc_info=True)
+        return []
+
+
+def _parse_workday_location(loc: str):
+    """Workday detail locations read 'US, UT, Salt Lake City' (country, state,
+    city). Return (city, state_code, is_remote)."""
+    parts = [p.strip() for p in re.split(r"[,/]", loc or "") if p.strip()]
+    state = None
+    for p in parts:
+        sc = _state_code(p)
+        if sc:
+            state = sc
+            break
+    city = None
+    for p in reversed(parts):
+        low = p.lower()
+        if _state_code(p) or low in ("us", "usa") or "united states" in low or low == "remote":
+            continue
+        city = p
+        break
+    return city, state, _loc_is_remote(loc)
+
+
+def _workday_state_stubs(slug, state_name, state_code):
+    try:
+        tenant, wd, site = slug.split("|")
+    except ValueError:
+        return []
+    cxs = f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
+    site_url = f"https://{tenant}.{wd}.myworkdayjobs.com/{site}"
+    out, offset = [], 0
+    for _ in range(75):  # cap ~1500 state stubs per board
+        try:
+            resp = httpx.post(f"{cxs}/jobs",
+                              json={"limit": 20, "offset": offset, "searchText": state_name, "appliedFacets": {}},
+                              headers=_CXS_HEADERS, timeout=12)
+            if resp.status_code != 200:
+                break
+            payload = resp.json()
+        except Exception:
+            break
+        posts = payload.get("jobPostings") or []
+        if not posts:
+            break
+        for p in posts:
+            ext = p.get("externalPath") or ""
+            r = _row(p.get("title"), site_url + ext, location=p.get("locationsText"))
+            if r:
+                r["_enrich"] = {"ats": "workday", "url": f"{cxs}{ext}", "want": state_code}
+                out.append(r)
+        offset += 20
+        if offset >= (payload.get("total") or 0):
+            break
+    return out
+
+
+def _sr_state_stubs(slug, state_code):
+    out, offset = [], 0
+    for _ in range(30):  # scan up to 3000 postings/board
+        data = _get_json(
+            f"https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100&offset={offset}", timeout=15)
+        content = (data or {}).get("content") or []
+        if not content:
+            break
+        for j in content:
+            loc = j.get("location") or {}
+            region, city, remote = loc.get("region"), loc.get("city"), bool(loc.get("remote"))
+            if _state_code(region or "") != state_code and not remote:
+                continue
+            jid = j.get("id")
+            r = _row(j.get("name"), f"https://jobs.smartrecruiters.com/{slug}/{jid}",
+                     location=", ".join(p for p in (city, region) if p) or None,
+                     city=city, state=region, is_remote=remote,
+                     employment_type=(j.get("typeOfEmployment") or {}).get("label"),
+                     department=(j.get("department") or {}).get("label"),
+                     posted_date=(j.get("releasedDate") or "")[:10] or None)
+            if r:
+                r["_enrich"] = {"ats": "smartrecruiters",
+                                "url": f"https://api.smartrecruiters.com/v1/companies/{slug}/postings/{jid}"}
+                out.append(r)
+        if len(content) < 100:
+            break
+        offset += 100
+    return out
+
+
+def _bamboohr_state_stubs(slug, state_code):
+    data = _get_json(f"https://{slug}.bamboohr.com/careers/list", timeout=15)
+    out = []
+    for j in (data or {}).get("result") or []:
+        loc = j.get("location") if isinstance(j.get("location"), dict) else {}
+        city, state, remote = loc.get("city"), loc.get("state"), bool(j.get("isRemote"))
+        if _state_code(state or "") != state_code and not remote:
+            continue
+        jid = j.get("id")
+        r = _row(j.get("jobOpeningName"), f"https://{slug}.bamboohr.com/careers/{jid}",
+                 location=", ".join(p for p in (city, state) if p) or None,
+                 city=city, state=state, is_remote=remote,
+                 department=j.get("departmentLabel"), employment_type=j.get("employmentStatusLabel"))
+        if r:
+            r["_enrich"] = {"ats": "bamboohr", "url": f"https://{slug}.bamboohr.com/careers/{jid}/detail"}
+            out.append(r)
+    return out
+
+
+def enrich_job(j: dict) -> None:
+    """Fill in a stub's description (and, for Workday, its precise location)
+    via a per-job detail request. Mutates `j` in place; network only."""
+    e = j.get("_enrich") or {}
+    try:
+        if e.get("ats") == "workday":
+            _enrich_workday(j, e)
+        elif e.get("ats") == "smartrecruiters":
+            _enrich_sr(j, e)
+        elif e.get("ats") == "bamboohr":
+            _enrich_bamboohr(j, e)
+    except Exception:
+        log.debug("Enrich failed for %s", e.get("url"), exc_info=True)
+    j.pop("_enrich", None)
+
+
+def _enrich_workday(j, e):
+    d = (_get_json(e["url"], timeout=12) or {}).get("jobPostingInfo") or {}
+    want = e.get("want")
+    chosen = None
+    for loc in [d.get("location") or ""] + (d.get("additionalLocations") or []):
+        c, st, rem = _parse_workday_location(loc)
+        if st == want:
+            chosen = (loc, c, st, rem)
+            break
+    if not chosen:
+        loc = d.get("location") or j.get("location") or ""
+        chosen = (loc,) + _parse_workday_location(loc)
+    loc, c, st, rem = chosen
+    j["location"], j["city"], j["state"], j["is_remote"] = loc or j.get("location"), c, st, rem
+    j["apply_link"] = d.get("externalUrl") or j.get("apply_link")
+    j["employment_type"] = d.get("timeType") or j.get("employment_type")
+    j["posted_date"] = (d.get("startDate") or j.get("posted_date") or "")[:10] or None
+    desc = _strip_html(d.get("jobDescription"))
+    if desc:
+        j["description"], j["has_detail"] = desc, True
+
+
+def _enrich_sr(j, e):
+    secs = ((_get_json(e["url"], timeout=15) or {}).get("jobAd") or {}).get("sections") or {}
+    parts = [_strip_html((secs.get(k) or {}).get("text"))
+             for k in ("jobDescription", "qualifications", "additionalInformation")]
+    desc = "\n\n".join(p for p in parts if p)
+    if desc:
+        j["description"], j["has_detail"] = desc[:6000], True
+
+
+def _enrich_bamboohr(j, e):
+    res = (_get_json(e["url"], timeout=15) or {}).get("result") or {}
+    raw = res.get("description") or (res.get("jobOpening") or {}).get("description") or ""
+    desc = _strip_html(raw)
+    if desc:
+        j["description"], j["has_detail"] = desc, True
 
 
 _SAMPLE_BOARD_PATTERN = re.compile(r"\(sample\)|\(voorbeeld\)|test job|dummy", re.I)

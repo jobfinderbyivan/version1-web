@@ -74,27 +74,36 @@ def _fingerprint(company_key: str, title: str, location: str) -> str:
 
 # ------------------------------------------------------------- the crawler ---
 
-def crawl_all_boards(workers: int = 12, limit: int = None, log_fn=None) -> dict:
-    """Fetch every cached board and rebuild cached_jobs. Returns a stats dict."""
+def crawl_all_boards(workers: int = 16, enrich_workers: int = 24,
+                     limit: int = None, log_fn=None) -> dict:
+    """Rebuild cached_jobs for the target state in three phases:
+       A) gather state/remote postings from every board (concurrent),
+       B) enrich the partial-detail stubs with their full description,
+       C) upsert + prune.
+    Returns a stats dict."""
     log_fn = log_fn or (lambda m: log.info("%s", m))
     if not db.acquire_lock("board_crawl", max_age_minutes=180):
         log_fn("Board crawl skipped: previous run still in progress")
         return {"skipped": True, "reason": "previous run in progress"}
     started = db.now()
+    target = config.CACHE_TARGET_STATE
+    target_name = US_STATE_NAMES.get(target, target)
     try:
         boards = db.query(
             "SELECT company_key, ats, slug, domain FROM company_ats_cache "
             "WHERE board_found = 1 AND ats IS NOT NULL AND slug IS NOT NULL")
         if limit:
             boards = boards[:limit]
-        log_fn(f"Board crawl starting: {len(boards)} boards")
-        stats = {"boards": len(boards), "boards_ok": 0, "boards_empty": 0,
-                 "jobs_upserted": 0, "by_ats": {}}
+        log_fn(f"Board crawl starting: {len(boards)} boards (target {target})")
+        stats = {"boards": len(boards), "boards_ok": 0, "jobs_upserted": 0, "by_ats": {}}
         crawled_keys = set()
 
+        # --- Phase A: gather state/remote stubs ---
         def _fetch(board):
-            return board, link_resolver.fetch_board_detailed(board["ats"], board["slug"])
+            return board, link_resolver.fetch_board_for_cache(
+                board["ats"], board["slug"], target_name, target)
 
+        stubs = []  # list of (board, jobdict)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
             done = 0
             for fut in concurrent.futures.as_completed([ex.submit(_fetch, b) for b in boards]):
@@ -103,29 +112,40 @@ def crawl_all_boards(workers: int = 12, limit: int = None, log_fn=None) -> dict:
                     board, jobs = fut.result()
                 except Exception:
                     continue
-                ats = board["ats"]
-                a = stats["by_ats"].setdefault(ats, {"boards": 0, "jobs": 0, "detail": 0})
-                a["boards"] += 1
                 crawled_keys.add(board["company_key"])  # reachable -> eligible for pruning
-                if not jobs:
-                    stats["boards_empty"] += 1
-                    continue
-                stats["boards_ok"] += 1
+                if jobs:
+                    stats["boards_ok"] += 1
                 for j in jobs:
-                    _upsert(board, j, started)
-                    stats["jobs_upserted"] += 1
-                    a["jobs"] += 1
-                    if j.get("has_detail"):
-                        a["detail"] += 1
-                if done % 250 == 0:
-                    log_fn(f"  ...crawled {done}/{len(boards)} boards, {stats['jobs_upserted']} jobs so far")
+                    # Stubs needing enrichment don't know their final location yet;
+                    # already-detailed rows are gated to the target state now to
+                    # keep the in-memory set small.
+                    if not j.get("_enrich") and not _is_target(j, target):
+                        continue
+                    stubs.append((board, j))
+                if done % 300 == 0:
+                    log_fn(f"  ...A: {done}/{len(boards)} boards scanned, {len(stubs)} candidate postings")
+
+        # --- Phase B: enrich partial-detail stubs (description + precise location) ---
+        pending = [j for _, j in stubs if j.get("_enrich")]
+        log_fn(f"  B: enriching {len(pending)} postings with full detail")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=enrich_workers) as ex:
+            list(ex.map(link_resolver.enrich_job, pending))
+
+        # --- Phase C: upsert (main thread) ---
+        for board, j in stubs:
+            if _upsert(board, j, started, target):
+                stats["jobs_upserted"] += 1
+                a = stats["by_ats"].setdefault(board["ats"], {"jobs": 0, "detail": 0})
+                a["jobs"] += 1
+                if j.get("has_detail"):
+                    a["detail"] += 1
 
         stats["pruned"] = _prune(crawled_keys, started)
         total = db.query_one("SELECT COUNT(*) AS n FROM cached_jobs") or {"n": 0}
         stats["cache_total"] = total["n"]
         db.set_setting("last_board_crawl_at", started)
         db.set_setting("last_board_crawl_stats", db.jdumps(stats))
-        log_fn(f"Board crawl done: {stats['jobs_upserted']} postings from "
+        log_fn(f"Board crawl done: {stats['jobs_upserted']} {target} postings from "
                f"{stats['boards_ok']} boards, pruned {stats['pruned']}, "
                f"cache now holds {stats['cache_total']}")
         return stats
@@ -133,10 +153,18 @@ def crawl_all_boards(workers: int = 12, limit: int = None, log_fn=None) -> dict:
         db.release_lock("board_crawl")
 
 
-def _upsert(board, j, seen_at) -> None:
+def _is_target(j, target_code) -> bool:
+    _, state, remote = split_location(
+        j.get("location"), city=j.get("city"), state=j.get("state"), is_remote=j.get("is_remote"))
+    return state == target_code or remote
+
+
+def _upsert(board, j, seen_at, target_code) -> bool:
     ck = board["company_key"]
     city, state, remote = split_location(
         j.get("location"), city=j.get("city"), state=j.get("state"), is_remote=j.get("is_remote"))
+    if state != target_code and not remote:
+        return False  # outside the target state (e.g. a Workday searchText false positive)
     fp = _fingerprint(ck, j["title"], j.get("location"))
     db.execute(
         "INSERT INTO cached_jobs (fingerprint, company_key, company_name, ats, title, apply_link, "
@@ -157,6 +185,7 @@ def _upsert(board, j, seen_at) -> None:
          j.get("location"), city, state, 1 if remote else 0, j.get("salary"),
          j.get("description"), j.get("department"), j.get("employment_type"),
          j.get("posted_date"), 1 if j.get("has_detail") else 0, seen_at, seen_at))
+    return True
 
 
 def _prune(crawled_keys, started) -> int:

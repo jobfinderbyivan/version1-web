@@ -100,6 +100,10 @@ BOARD_CRAWL_HOUR = int(env("BOARD_CRAWL_HOUR", "10") or 10)
 # Open postings disappear from a board when filled; prune cache rows not seen in
 # this many days (covers a board being briefly unreachable during a crawl).
 CACHED_JOB_TTL_DAYS = int(env("CACHED_JOB_TTL_DAYS", "4") or 4)
+# The crawl keeps only postings in this state (2-letter) or flagged remote. Big
+# partial-detail boards (Workday/SmartRecruiters/BambooHR) are filtered to this
+# state server-/client-side before enrichment so we don't pull the nation.
+CACHE_TARGET_STATE = env("CACHE_TARGET_STATE", "UT").upper()
 AUTOMATION_HOUR = int(env("AUTOMATION_HOUR", "11") or 11)
 SCHEDULER_ENABLED = env_bool("SCHEDULER_ENABLED", True)
 # Listings older than this are discarded. Job APIs often index postings days
