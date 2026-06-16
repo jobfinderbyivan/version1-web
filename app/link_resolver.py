@@ -15,6 +15,7 @@ be located, via three mechanisms:
 
 Board discoveries AND misses are cached per company for 30 days.
 """
+import html as _html
 import logging
 import re
 from datetime import datetime, timedelta
@@ -123,9 +124,9 @@ def slug_variants(company: str, domain: str = None) -> list:
     return result[:4]
 
 
-def _get_json(url: str, **kwargs):
+def _get_json(url: str, timeout: float = 8, **kwargs):
     try:
-        resp = httpx.get(url, timeout=8, follow_redirects=True,
+        resp = httpx.get(url, timeout=timeout, follow_redirects=True,
                          headers={"User-Agent": "Mozilla/5.0 (JobSearchAssistant link check)"},
                          **kwargs)
         if resp.status_code == 200:
@@ -366,6 +367,224 @@ def _workday_jobs(tenant: str, wd: str, site: str, search_text: str):
                 for p in postings if p.get("title")]
     except Exception:
         return None
+
+
+# ----------------------------------------------- detailed board fetching ---
+# fetch_board (above) returns (title, url) pairs — enough to resolve a single
+# job's direct link. The daily cache (app/job_cache.py) needs the FULL posting:
+# location, salary, description, posted date. These adapters pull everything the
+# board's public list endpoint exposes in ONE request per board (with detail
+# params where they're free), so a full crawl stays cheap. Platforms whose list
+# endpoint omits the description (SmartRecruiters, BambooHR, Workday, iCIMS)
+# return has_detail=False so callers know the text is title-only.
+
+def _strip_html(s: str) -> str:
+    if not s:
+        return ""
+    s = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", s)
+    s = re.sub(r"(?i)<br\s*/?>", "\n", s)
+    s = re.sub(r"(?i)</(p|div|li|h[1-6]|tr)>", "\n", s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = _html.unescape(s)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n\s*\n+", "\n\n", s)
+    return s.strip()[:6000]
+
+
+def _epoch_ms_to_date(ms):
+    try:
+        return datetime.utcfromtimestamp(int(ms) / 1000).date().isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _row(title, link, *, location=None, city=None, state=None, is_remote=False,
+         salary=None, description=None, department=None, employment_type=None,
+         posted_date=None):
+    """Build a normalized cache row, or None if it lacks a title or link."""
+    title = (title or "").strip()
+    if not title or not link:
+        return None
+    desc = (description or "").strip() or None
+    return {
+        "title": title[:300], "apply_link": link,
+        "location": (location or "").strip() or None, "city": city, "state": state,
+        "is_remote": bool(is_remote), "salary": salary, "description": desc,
+        "department": department, "employment_type": employment_type,
+        "posted_date": posted_date, "has_detail": bool(desc),
+    }
+
+
+def fetch_board_detailed(ats: str, slug: str) -> list:
+    """Return full job dicts for the daily cache (see module note above).
+    Always returns a list (empty when the board is missing/unreachable)."""
+    try:
+        fn = _DETAILED_FETCHERS.get(ats)
+        if fn:
+            return [r for r in fn(slug) if r]
+    except Exception:
+        log.debug("Detailed fetch failed for %s/%s", ats, slug, exc_info=True)
+    return []
+
+
+def _gh_detailed(slug):
+    data = _get_json(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true", timeout=15)
+    out = []
+    for j in (data or {}).get("jobs") or []:
+        depts = j.get("departments") or []
+        out.append(_row(
+            j.get("title"), j.get("absolute_url"),
+            location=(j.get("location") or {}).get("name"),
+            description=_strip_html(j.get("content")),
+            department=(depts[0].get("name") if depts else None),
+            posted_date=(j.get("updated_at") or "")[:10] or None))
+    return out
+
+
+def _lever_detailed(slug):
+    data = _get_json(f"https://api.lever.co/v0/postings/{slug}?mode=json", timeout=15)
+    out = []
+    for j in data if isinstance(data, list) else []:
+        cat = j.get("categories") or {}
+        salary = None
+        sr = j.get("salaryRange") or {}
+        if sr.get("min") and sr.get("max"):
+            unit = "/hour" if "hour" in (sr.get("interval") or "").lower() else "/year"
+            salary = f"${sr['min']:,.0f} - ${sr['max']:,.0f}{unit}"
+        out.append(_row(
+            j.get("text"), j.get("hostedUrl"),
+            location=cat.get("location"),
+            is_remote="remote" in (j.get("workplaceType") or "").lower(),
+            salary=salary,
+            description=j.get("descriptionPlain") or _strip_html(j.get("description")),
+            department=cat.get("department") or cat.get("team"),
+            employment_type=cat.get("commitment"),
+            posted_date=_epoch_ms_to_date(j.get("createdAt"))))
+    return out
+
+
+def _ashby_detailed(slug):
+    data = _get_json(f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true", timeout=15)
+    out = []
+    for j in (data or {}).get("jobs") or []:
+        summary = (j.get("compensation") or {}).get("compensationTierSummary")
+        out.append(_row(
+            j.get("title"), j.get("jobUrl") or j.get("applyUrl"),
+            location=j.get("location"), is_remote=bool(j.get("isRemote")),
+            salary=summary.strip() if isinstance(summary, str) and summary.strip() else None,
+            description=j.get("descriptionPlain") or _strip_html(j.get("descriptionHtml")),
+            department=j.get("departmentName") or j.get("department") or j.get("team"),
+            employment_type=j.get("employmentType"),
+            posted_date=(j.get("publishedAt") or j.get("publishedDate") or "")[:10] or None))
+    return out
+
+
+def _sr_detailed(slug):
+    data = _get_json(f"https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100", timeout=15)
+    out = []
+    for j in (data or {}).get("content") or []:
+        loc = j.get("location") or {}
+        city, region = loc.get("city"), loc.get("region")
+        out.append(_row(
+            j.get("name"), f"https://jobs.smartrecruiters.com/{slug}/{j.get('id')}",
+            location=", ".join(p for p in (city, region) if p) or None,
+            city=city, state=region, is_remote=bool(loc.get("remote")),
+            employment_type=(j.get("typeOfEmployment") or {}).get("label"),
+            department=(j.get("department") or {}).get("label"),
+            posted_date=(j.get("releasedDate") or "")[:10] or None))
+    return out
+
+
+def _workable_detailed(slug):
+    # The widget API puts location fields flat on each job (city/state/country),
+    # not nested under a "location" key.
+    data = _get_json(f"https://apply.workable.com/api/v1/widget/accounts/{slug}?details=true", timeout=15)
+    out = []
+    for j in (data or {}).get("jobs") or []:
+        city, region, country = j.get("city"), j.get("state"), j.get("country")
+        out.append(_row(
+            j.get("title"), j.get("url") or j.get("application_url") or j.get("shortlink"),
+            location=", ".join(p for p in (city, region) if p) or country,
+            city=city, state=region, is_remote=bool(j.get("telecommuting")),
+            description=_strip_html(j.get("description")),
+            department=j.get("department"), employment_type=j.get("employment_type"),
+            posted_date=(j.get("created_at") or j.get("published_on") or "")[:10] or None))
+    return out
+
+
+def _recruitee_detailed(slug):
+    data = _get_json(f"https://{slug}.recruitee.com/api/offers/", timeout=15)
+    out = []
+    for j in (data or {}).get("offers") or []:
+        city, country = j.get("city"), j.get("country")
+        out.append(_row(
+            j.get("title"), j.get("careers_url"),
+            location=j.get("location") or ", ".join(p for p in (city, country) if p) or None,
+            city=city, is_remote=bool(j.get("remote")),
+            description=_strip_html(j.get("description")),
+            department=j.get("department"), employment_type=j.get("employment_type_code"),
+            posted_date=(j.get("created_at") or "")[:10] or None))
+    return out
+
+
+def _bamboohr_detailed(slug):
+    data = _get_json(f"https://{slug}.bamboohr.com/careers/list", timeout=15)
+    out = []
+    for j in (data or {}).get("result") or []:
+        loc = j.get("location")
+        if isinstance(loc, dict):
+            city, state = loc.get("city"), loc.get("state")
+            location = ", ".join(p for p in (city, state) if p) or None
+        else:
+            city = state = None
+            location = (str(loc).strip() or None) if loc else None
+        out.append(_row(
+            j.get("jobOpeningName"), f"https://{slug}.bamboohr.com/careers/{j.get('id')}",
+            location=location, city=city, state=state, is_remote=bool(j.get("isRemote")),
+            department=j.get("departmentLabel"), employment_type=j.get("employmentStatusLabel")))
+    return out
+
+
+def _workday_detailed(slug):
+    try:
+        tenant, wd, site = slug.split("|")
+    except ValueError:
+        return []
+    base = f"https://{tenant}.{wd}.myworkdayjobs.com/{site}"
+    api = f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+    out, offset = [], 0
+    for _ in range(10):  # cap ~200 postings per board
+        try:
+            resp = httpx.post(api, json={"limit": 20, "offset": offset, "searchText": "", "appliedFacets": {}},
+                              headers={"User-Agent": "Mozilla/5.0 (JobSearchAssistant link check)",
+                                       "Content-Type": "application/json"}, timeout=12)
+            if resp.status_code != 200:
+                break
+            payload = resp.json()
+        except Exception:
+            break
+        postings = payload.get("jobPostings") or []
+        if not postings:
+            break
+        for p in postings:
+            out.append(_row(p.get("title"), base + (p.get("externalPath") or ""),
+                            location=p.get("locationsText")))
+        offset += 20
+        if offset >= (payload.get("total") or 0) or offset >= 200:
+            break
+    return out
+
+
+def _icims_detailed(slug):
+    return [_row(title, url) for title, url in (fetch_board("icims", slug) or [])]
+
+
+_DETAILED_FETCHERS = {
+    "greenhouse": _gh_detailed, "lever": _lever_detailed, "ashby": _ashby_detailed,
+    "smartrecruiters": _sr_detailed, "workable": _workable_detailed,
+    "recruitee": _recruitee_detailed, "bamboohr": _bamboohr_detailed,
+    "workday": _workday_detailed, "icims": _icims_detailed,
+}
 
 
 _SAMPLE_BOARD_PATTERN = re.compile(r"\(sample\)|\(voorbeeld\)|test job|dummy", re.I)

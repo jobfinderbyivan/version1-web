@@ -56,6 +56,78 @@ def hire_likelihood(profile_text: str, job: dict, user_id=None) -> dict:
     return result
 
 
+BATCH_HIRE_SCHEMA = llm.obj_schema({
+    "evaluations": {"type": "array", "items": llm.obj_schema({
+        "index": llm.INT,
+        "score": llm.INT,
+        "reason": llm.STR,
+        "skills_gap": llm.STR_ARR,
+        "detected_benefits": llm.STR_ARR,
+        "preferred_qualifications": llm.STR_ARR,
+    })},
+})
+
+HIRE_BATCH_SIZE = 6  # jobs per LLM call — amortizes the resume across the batch
+
+
+def hire_likelihood_batch(profile_text: str, jobs: list, user_id=None) -> list:
+    """Score many jobs against one profile, batching to share the resume tokens
+    across each call (far cheaper than one call per job). Returns a list of
+    result dicts aligned 1:1 with `jobs`. Falls back to the heuristic per job
+    when the AI is unavailable or omits an entry."""
+    results = [None] * len(jobs)
+    for start in range(0, len(jobs), HIRE_BATCH_SIZE):
+        chunk = jobs[start:start + HIRE_BATCH_SIZE]
+        parsed = _score_chunk(profile_text, chunk, user_id)
+        for i, job in enumerate(chunk):
+            r = parsed.get(i) or _heuristic_likelihood(profile_text, job)
+            r["score"] = max(1, min(10, int(r.get("score") or 1)))
+            r.setdefault("reason", "")
+            r.setdefault("skills_gap", [])
+            r.setdefault("detected_benefits", [])
+            r.setdefault("preferred_qualifications", [])
+            results[start + i] = r
+    return results
+
+
+def _score_chunk(profile_text: str, chunk: list, user_id) -> dict:
+    """One LLM call scoring up to HIRE_BATCH_SIZE jobs. Returns {index: result}."""
+    listings = []
+    for i, job in enumerate(chunk):
+        listings.append(
+            f"[Job {i}]\nTitle: {job['title']}\nCompany: {job['company']}\n"
+            f"Location: {job.get('location')}\n"
+            f"Description: {(job.get('description') or '')[:1500]}")
+    result = llm.complete_json(
+        "You are a career counselor and hiring expert. For EACH job listing below, rate the "
+        "likelihood (1-10) that this candidate would be hired for that position. Consider:\n"
+        "- Skills match (do the candidate's skills align with the job requirements?)\n"
+        "- Experience level match (is the candidate over/under qualified?)\n"
+        "- Transferable skills (could their background translate to this role?)\n"
+        "- The candidate's stated preferences and bio\n"
+        "- Industry alignment\n\n"
+        "For each job also list up to 3 skills the listing requires that the candidate's resume "
+        "does NOT mention, any benefits it mentions (from: health_insurance, 401k, pto, "
+        "remote_flexibility, tuition_reimbursement, dental_vision, parental_leave, "
+        "professional_development, stock_options), and its 'preferred/nice-to-have' qualifications.\n\n"
+        "Return ONE evaluation object per job in the `evaluations` array, each carrying the matching "
+        "`index` from its [Job N] header.\n\n"
+        f"Candidate Profile:\n{profile_text[:config.RESUME_TEXT_LIMIT]}\n\n"
+        "Job Listings:\n" + "\n\n".join(listings),
+        process_type="job_matching", user_id=user_id,
+        schema=BATCH_HIRE_SCHEMA, max_tokens=300 * len(chunk) + 200)
+    out = {}
+    if result and isinstance(result.get("evaluations"), list):
+        for ev in result["evaluations"]:
+            try:
+                idx = int(ev.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(chunk) and idx not in out:
+                out[idx] = ev
+    return out
+
+
 def _heuristic_likelihood(profile_text: str, job: dict) -> dict:
     """Keyword/skills-overlap fallback when no AI key is configured.
     Weighted toward the candidate's parsed skills and target positions so

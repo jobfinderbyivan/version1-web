@@ -89,7 +89,18 @@ SECRET_KEY = env("SECRET_KEY", "dev-secret-change-me")
 # from APP_BASE_URL; override with SECURE_COOKIES=true/false if needed.
 SECURE_COOKIES = env_bool("SECURE_COOKIES", APP_BASE_URL.startswith("https://"))
 
-AUTOMATION_HOUR = int(env("AUTOMATION_HOUR", "8") or 8)
+# Wall-clock hours are interpreted in this timezone (the scheduler is pinned to
+# it explicitly, so behaviour does not depend on the container's TZ — Railway
+# runs in UTC otherwise, which would shift "11:00" to early morning Mountain).
+SCHEDULER_TIMEZONE = env("SCHEDULER_TIMEZONE", "America/Denver")
+# Daily board crawl populates the local job cache (job_cache.crawl_all_boards)
+# before the main email cycle reads it.
+BOARD_CRAWL_ENABLED = env_bool("BOARD_CRAWL_ENABLED", True)
+BOARD_CRAWL_HOUR = int(env("BOARD_CRAWL_HOUR", "10") or 10)
+# Open postings disappear from a board when filled; prune cache rows not seen in
+# this many days (covers a board being briefly unreachable during a crawl).
+CACHED_JOB_TTL_DAYS = int(env("CACHED_JOB_TTL_DAYS", "4") or 4)
+AUTOMATION_HOUR = int(env("AUTOMATION_HOUR", "11") or 11)
 SCHEDULER_ENABLED = env_bool("SCHEDULER_ENABLED", True)
 # Listings older than this are discarded. Job APIs often index postings days
 # after publication, so the spec's 3-day window is too strict in practice;

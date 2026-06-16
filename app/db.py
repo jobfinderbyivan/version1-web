@@ -382,6 +382,35 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Daily snapshot of every open posting found on the cached employer ATS
+-- boards. Rebuilt by the board crawler (job_cache.crawl_all_boards) and read
+-- as a first-class job source during per-user matching. fingerprint dedups a
+-- posting across crawls; last_seen drives pruning of closed postings.
+CREATE TABLE IF NOT EXISTS cached_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    company_key TEXT NOT NULL,
+    company_name TEXT,
+    ats TEXT,
+    title TEXT NOT NULL,
+    apply_link TEXT,
+    location TEXT,
+    city TEXT,
+    state TEXT,
+    is_remote INTEGER DEFAULT 0,
+    salary TEXT,
+    description TEXT,
+    department TEXT,
+    employment_type TEXT,
+    posted_date TEXT,
+    has_detail INTEGER DEFAULT 0,
+    first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_seen TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cached_jobs_state ON cached_jobs(state);
+CREATE INDEX IF NOT EXISTS idx_cached_jobs_remote ON cached_jobs(is_remote);
+CREATE INDEX IF NOT EXISTS idx_cached_jobs_company ON cached_jobs(company_key);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT

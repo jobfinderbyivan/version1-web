@@ -4,14 +4,18 @@ LinkedIn re-analysis (11.3) and token budget alerts (5.2.5)."""
 import logging
 from datetime import date, datetime, timedelta
 
-from . import (config, db, email_compose, emailer, geo, goals, job_search,
-               link_resolver, llm, market, matching, research)
+from . import (config, db, email_compose, emailer, geo, goals, job_cache,
+               job_search, link_resolver, llm, market, matching, research)
 from .link_resolver import normalize_company
 
 log = logging.getLogger("automation")
 
 CADENCE_DAYS = {"daily": 1, "every_3_days": 3, "weekly": 7}
-MAX_LLM_EVALUATIONS_PER_USER = 14  # cost control: only the best candidates reach the LLM
+# Cost control: only the best candidates reach the LLM. Batched scoring
+# (matching.hire_likelihood_batch) shares the resume across ~6 jobs per call, so
+# this cap can be generous without a per-job cost — important now that the local
+# board cache contributes a large candidate pool.
+MAX_LLM_EVALUATIONS_PER_USER = 24
 
 
 # ----------------------------------------------------------------- helpers
@@ -248,7 +252,15 @@ def process_user(user) -> bool:
         for q in disability.get("extra_queries", [])[:2]:  # additive only
             raw_jobs += job_search.search_jobs(q, user.get("city") or "", user.get("state") or "",
                                                remote=remote_ok, max_days_old=max(days, config.SEARCH_RECENCY_DAYS))
-    db.log("main", uid, f"Collected {len(raw_jobs)} raw listings")
+    api_count = len(raw_jobs)
+
+    # Local board cache: the day's open postings on Utah employers' own ATS
+    # boards (job_cache.crawl_all_boards). A first-class source alongside the
+    # live APIs — direct employer links, no query guessing needed.
+    cache_jobs = job_cache.search_cached_jobs(user, include_local=local_ok, include_remote=remote_ok)
+    raw_jobs += cache_jobs
+    db.log("main", uid, f"Collected {len(raw_jobs)} raw listings "
+                        f"({api_count} from APIs, {len(cache_jobs)} from board cache)")
 
     candidates = _filter_candidates(user, raw_jobs, days)
     db.log("main", uid, f"{len(candidates)} candidates after filters/dedup")
@@ -415,14 +427,23 @@ def _location_ok(user, job, home_coords) -> bool:
 
 
 def _evaluate_candidates(user, profile_text, candidates) -> list:
-    """LLM hire-likelihood for the most promising candidates (cost-capped)."""
+    """LLM hire-likelihood for the most promising candidates (cost-capped).
+    Tier-1: rank by a cheap local relevance signal (so the RIGHT candidates
+    reach the LLM when the pool is large); Tier-2: batched Claude scoring."""
+    terms = job_cache._user_terms(user)
+    for j in candidates:
+        j["_relevance"] = job_cache._relevance(terms, j.get("title"), j.get("description"))
+
     def pre_rank(j):
-        return (j.get("is_whitelisted", False), j.get("is_urgent", False),
+        return (j.get("is_whitelisted", False), j["_relevance"], j.get("is_urgent", False),
                 bool(j.get("salary")), -j.get("posted_days_ago", 0))
     candidates.sort(key=pre_rank, reverse=True)
+    shortlist = candidates[:MAX_LLM_EVALUATIONS_PER_USER]
+
+    results = matching.hire_likelihood_batch(profile_text, shortlist, user_id=user["id"])
+    user_benefits = set(db.jloads(user.get("preferred_benefits"), []))
     evaluated = []
-    for job in candidates[:MAX_LLM_EVALUATIONS_PER_USER]:
-        result = matching.hire_likelihood(profile_text, job, user_id=user["id"])
+    for job, result in zip(shortlist, results):
         job["hire_score"] = result["score"]
         job["match_reason"] = result["reason"]
         job["skills_gap"] = result["skills_gap"]
@@ -430,7 +451,6 @@ def _evaluate_candidates(user, profile_text, candidates) -> list:
         for b in result["detected_benefits"]:
             if b not in job["detected_benefits"]:
                 job["detected_benefits"].append(b)
-        user_benefits = set(db.jloads(user.get("preferred_benefits"), []))
         job["matched_benefits"] = [b for b in job["detected_benefits"] if b in user_benefits]
         evaluated.append(job)
     return evaluated
