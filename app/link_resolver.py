@@ -16,6 +16,7 @@ be located, via three mechanisms:
 Board discoveries AND misses are cached per company for 30 days.
 """
 import html as _html
+import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -634,6 +635,8 @@ def fetch_board_for_cache(ats: str, slug: str, state_name: str, state_code: str)
             return _sr_state_stubs(slug, state_code)
         if ats == "bamboohr":
             return _bamboohr_state_stubs(slug, state_code)
+        if ats == "icims":
+            return _icims_stubs(slug, state_code)
         return fetch_board_detailed(ats, slug)
     except Exception:
         log.debug("Cache fetch failed for %s/%s", ats, slug, exc_info=True)
@@ -742,9 +745,44 @@ def _bamboohr_state_stubs(slug, state_code):
     return out
 
 
+def _icims_stubs(slug, state_code):
+    """iCIMS exposes no list-level location and no server-side state filter, so
+    we enumerate every posting (paginated) and let enrichment discover each
+    job's location. The per-job detail cache (job_cache) ensures each posting is
+    fetched only once across crawls."""
+    pat = re.compile(r'href="(https://careers-' + re.escape(slug) +
+                     r'\.icims\.com/jobs/\d+/[^/"]+/job)[^"]*"[^>]*>(.*?)</a>', re.S)
+    out, seen = [], set()
+    for pr in range(0, 15):  # up to ~300 postings/board
+        try:
+            resp = httpx.get(f"https://careers-{slug}.icims.com/jobs/search?ss=1&in_iframe=1&pr={pr}",
+                             headers={"User-Agent": "Mozilla/5.0 (JobSearchAssistant link check)"},
+                             timeout=12, follow_redirects=True)
+        except Exception:
+            break
+        if resp.status_code != 200:
+            break
+        found = 0
+        for m in pat.finditer(resp.text):
+            url = m.group(1)
+            if url in seen:
+                continue
+            seen.add(url)
+            found += 1
+            title = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", m.group(2))).strip()
+            title = re.sub(r"^job title\s*", "", title, flags=re.I).strip()
+            r = _row(title, url)
+            if r:
+                r["_enrich"] = {"ats": "icims", "url": url, "want": state_code}
+                out.append(r)
+        if found < 20:
+            break
+    return out
+
+
 def enrich_job(j: dict) -> None:
-    """Fill in a stub's description (and, for Workday, its precise location)
-    via a per-job detail request. Mutates `j` in place; network only."""
+    """Fill in a stub's description (and, for Workday/iCIMS, its precise
+    location) via a per-job detail request. Mutates `j` in place; network only."""
     e = j.get("_enrich") or {}
     try:
         if e.get("ats") == "workday":
@@ -753,6 +791,8 @@ def enrich_job(j: dict) -> None:
             _enrich_sr(j, e)
         elif e.get("ats") == "bamboohr":
             _enrich_bamboohr(j, e)
+        elif e.get("ats") == "icims":
+            _enrich_icims(j, e)
     except Exception:
         log.debug("Enrich failed for %s", e.get("url"), exc_info=True)
     j.pop("_enrich", None)
@@ -793,6 +833,120 @@ def _enrich_bamboohr(j, e):
     res = (_get_json(e["url"], timeout=15) or {}).get("result") or {}
     raw = res.get("description") or (res.get("jobOpening") or {}).get("description") or ""
     desc = _strip_html(raw)
+    if desc:
+        j["description"], j["has_detail"] = desc, True
+
+
+def _iter_jsonld(data):
+    if isinstance(data, list):
+        for x in data:
+            yield from _iter_jsonld(x)
+    elif isinstance(data, dict):
+        if "@graph" in data:
+            yield from _iter_jsonld(data["@graph"])
+        else:
+            yield data
+
+
+_ICIMS_LOC_RE = re.compile(r"US-([A-Z]{2})-([A-Za-z.'\-]+(?:\s+[A-Za-z.'\-]+){0,3})")
+
+
+def _enrich_icims(j, e):
+    # The standalone job URL often redirects to the company's own marketing
+    # page; the ?in_iframe=1 view renders the real iCIMS job content (location
+    # as "US-XX-City", plus the Overview/Responsibilities/Qualifications body).
+    url = e["url"]
+    fetch_url = url + ("&" if "?" in url else "?") + "in_iframe=1"
+    try:
+        resp = httpx.get(fetch_url, headers={"User-Agent": "Mozilla/5.0 (JobSearchAssistant link check)"},
+                         timeout=12, follow_redirects=True)
+        if resp.status_code != 200:
+            return
+        html = resp.text
+    except Exception:
+        return
+    want = e.get("want")
+
+    # 1) JSON-LD JobPosting, when a portal exposes it
+    for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', html, re.S | re.I):
+        try:
+            data = json.loads(m.group(1).strip())
+        except (ValueError, TypeError):
+            continue
+        for o in _iter_jsonld(data):
+            t = o.get("@type")
+            if t == "JobPosting" or (isinstance(t, list) and "JobPosting" in t):
+                _apply_jobposting(j, o, want)
+                if j.get("state") or j.get("is_remote"):
+                    return
+
+    # 2) HTML fallback: canonical "US-XX-City" location tokens
+    city, state, remote = _icims_location(html, want)
+    if state or city or remote:
+        j["location"] = ", ".join(p for p in (city, state) if p) or ("Remote" if remote else j.get("location"))
+        j["city"], j["state"], j["is_remote"] = city, state, remote
+    desc = _icims_description(html)
+    if desc:
+        j["description"], j["has_detail"] = desc, True
+
+
+def _icims_location(html, want):
+    tokens, seen = [], set()
+    for st, city in _ICIMS_LOC_RE.findall(html):
+        key = (st, city.strip())
+        if key not in seen:
+            seen.add(key)
+            tokens.append((city.strip(), st))
+    if not tokens:
+        return None, None, _loc_is_remote(html[:4000])
+    chosen = next((t for t in tokens if t[1] == want), tokens[0])
+    city, state = chosen
+    remote = "remote" in city.lower()
+    return (None if remote else city), state, remote
+
+
+def _icims_description(html):
+    start = re.search(r'(Overview|Responsibilities|Job\s+Summary|Position\s+Summary)', html)
+    if not start:
+        return ""
+    seg = html[start.start():]
+    for marker in ("Options</", "Apply for this job", "Share on your", "Need help", "Sorry the Share"):
+        i = seg.find(marker)
+        if i > 200:
+            seg = seg[:i]
+            break
+    return _strip_html(seg)
+
+
+def _apply_jobposting(j, o, want):
+    """Populate a stub from a schema.org JobPosting object (JSON-LD)."""
+    remote = (o.get("jobLocationType") or "").upper() == "TELECOMMUTE"
+    locs = o.get("jobLocation")
+    locs = locs if isinstance(locs, list) else [locs]
+    best = None  # prefer a location in the wanted state
+    for loc in locs:
+        addr = (loc or {}).get("address") if isinstance(loc, dict) else None
+        if not isinstance(addr, dict):
+            continue
+        city = addr.get("addressLocality")
+        st = _state_code(addr.get("addressRegion") or "")
+        if st == want:
+            best = (city, st)
+            break
+        if best is None:
+            best = (city, st)
+    city, state = best or (None, None)
+    loc_str = ", ".join(p for p in (city, state) if p) or ("Remote" if remote else None)
+    if loc_str:
+        j["location"] = loc_str
+    j["city"], j["state"], j["is_remote"] = city, state, (remote or _loc_is_remote(loc_str or ""))
+    dp = o.get("datePosted")
+    if dp:
+        j["posted_date"] = str(dp)[:10]
+    et = o.get("employmentType")
+    if et:
+        j["employment_type"] = et if isinstance(et, str) else ", ".join(et)
+    desc = _strip_html(o.get("description"))
     if desc:
         j["description"], j["has_detail"] = desc, True
 

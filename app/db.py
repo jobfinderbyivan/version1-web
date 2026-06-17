@@ -411,6 +411,29 @@ CREATE INDEX IF NOT EXISTS idx_cached_jobs_state ON cached_jobs(state);
 CREATE INDEX IF NOT EXISTS idx_cached_jobs_remote ON cached_jobs(is_remote);
 CREATE INDEX IF NOT EXISTS idx_cached_jobs_company ON cached_jobs(company_key);
 
+-- Per-job detail cache keyed by the stable job URL. Platforms whose list feed
+-- omits the description/location (Workday, SmartRecruiters, BambooHR, iCIMS)
+-- need a per-job detail fetch; this remembers the result so a job is fetched
+-- only ONCE — later crawls reuse it and skip the network call. Pruned by TTL so
+-- closed postings fall out. (iCIMS especially: no server-side state filter, so
+-- without this we'd re-scrape thousands of pages every day.)
+CREATE TABLE IF NOT EXISTS ats_detail_cache (
+    job_key TEXT PRIMARY KEY,
+    ats TEXT,
+    apply_link TEXT,
+    location TEXT,
+    city TEXT,
+    state TEXT,
+    is_remote INTEGER DEFAULT 0,
+    salary TEXT,
+    department TEXT,
+    employment_type TEXT,
+    description TEXT,
+    posted_date TEXT,
+    has_detail INTEGER DEFAULT 0,
+    last_seen TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT

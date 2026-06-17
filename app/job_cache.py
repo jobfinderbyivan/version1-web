@@ -125,11 +125,30 @@ def crawl_all_boards(workers: int = 16, enrich_workers: int = 24,
                 if done % 300 == 0:
                     log_fn(f"  ...A: {done}/{len(boards)} boards scanned, {len(stubs)} candidate postings")
 
-        # --- Phase B: enrich partial-detail stubs (description + precise location) ---
-        pending = [j for _, j in stubs if j.get("_enrich")]
-        log_fn(f"  B: enriching {len(pending)} postings with full detail")
+        # --- Phase B: resolve detail for partial stubs, fetching only NEW jobs ---
+        # Per-job detail (description + precise location) is cached by job URL,
+        # so a posting is fetched once and reused on every later crawl. Vital for
+        # iCIMS (no state filter -> thousands of pages) and a big win for the
+        # others (persistent postings become free).
+        pending = [(b, j) for (b, j) in stubs if j.get("_enrich")]
+        cached = _detail_cache_get([j["_enrich"]["url"] for _, j in pending])
+        hit_keys, to_fetch = [], []
+        for _, j in pending:
+            key = j["_enrich"]["url"]
+            row = cached.get(key)
+            if row:
+                _apply_detail(j, row)
+                j.pop("_enrich", None)
+                hit_keys.append(key)
+            else:
+                to_fetch.append((key, j["_enrich"]["ats"], j))
+        _detail_cache_touch(hit_keys, started)
+        log_fn(f"  B: {len(hit_keys)} detail-cache hits, fetching {len(to_fetch)} new postings")
         with concurrent.futures.ThreadPoolExecutor(max_workers=enrich_workers) as ex:
-            list(ex.map(link_resolver.enrich_job, pending))
+            list(ex.map(lambda t: link_resolver.enrich_job(t[2]), to_fetch))
+        with db.tx() as conn:
+            for key, ats, j in to_fetch:
+                _detail_cache_put(conn, key, ats, j, target, started)
 
         # --- Phase C: upsert (main thread) ---
         for board, j in stubs:
@@ -141,8 +160,10 @@ def crawl_all_boards(workers: int = 16, enrich_workers: int = 24,
                     a["detail"] += 1
 
         stats["pruned"] = _prune(crawled_keys, started)
+        stats["detail_pruned"] = _prune_detail_cache(started)
         total = db.query_one("SELECT COUNT(*) AS n FROM cached_jobs") or {"n": 0}
         stats["cache_total"] = total["n"]
+        stats["detail_cache_total"] = (db.query_one("SELECT COUNT(*) AS n FROM ats_detail_cache") or {"n": 0})["n"]
         db.set_setting("last_board_crawl_at", started)
         db.set_setting("last_board_crawl_stats", db.jdumps(stats))
         log_fn(f"Board crawl done: {stats['jobs_upserted']} {target} postings from "
@@ -208,6 +229,75 @@ def _prune(crawled_keys, started) -> int:
         cur = conn.execute("DELETE FROM cached_jobs WHERE last_seen < ?", (cutoff,))
         pruned += cur.rowcount
     return pruned
+
+
+# ---------------------------------------------- per-job detail cache (by URL) ---
+
+def _detail_cache_get(keys) -> dict:
+    out = {}
+    keys = list(dict.fromkeys(keys))
+    for i in range(0, len(keys), 400):
+        chunk = keys[i:i + 400]
+        ph = ",".join("?" * len(chunk))
+        for r in db.query(f"SELECT * FROM ats_detail_cache WHERE job_key IN ({ph})", tuple(chunk)):
+            out[r["job_key"]] = r
+    return out
+
+
+def _apply_detail(j, row) -> None:
+    """Copy a cached detail row onto a stub (skips a network fetch)."""
+    if row.get("apply_link"):
+        j["apply_link"] = row["apply_link"]
+    j["location"], j["city"], j["state"] = row["location"], row["city"], row["state"]
+    j["is_remote"] = bool(row["is_remote"])
+    if row.get("salary"):
+        j["salary"] = row["salary"]
+    if row.get("department"):
+        j["department"] = row["department"]
+    if row.get("employment_type"):
+        j["employment_type"] = row["employment_type"]
+    j["description"] = row["description"]
+    if row.get("posted_date"):
+        j["posted_date"] = row["posted_date"]
+    j["has_detail"] = bool(row["has_detail"])
+
+
+def _detail_cache_touch(keys, seen_at) -> None:
+    keys = list(dict.fromkeys(keys))
+    for i in range(0, len(keys), 400):
+        chunk = keys[i:i + 400]
+        ph = ",".join("?" * len(chunk))
+        db.execute(f"UPDATE ats_detail_cache SET last_seen = ? WHERE job_key IN ({ph})",
+                   (seen_at, *chunk))
+
+
+def _detail_cache_put(conn, key, ats, j, target_code, seen_at) -> None:
+    city, state, remote = split_location(
+        j.get("location"), city=j.get("city"), state=j.get("state"), is_remote=j.get("is_remote"))
+    is_target = state == target_code or remote
+    # Only keep the (large) description for postings we might actually surface;
+    # off-target rows store just enough to recognise + skip the job next time.
+    desc = j.get("description") if is_target else None
+    has_detail = 1 if (is_target and desc) else 0
+    conn.execute(
+        "INSERT INTO ats_detail_cache (job_key, ats, apply_link, location, city, state, is_remote, "
+        "salary, department, employment_type, description, posted_date, has_detail, last_seen) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(job_key) DO UPDATE SET apply_link=excluded.apply_link, location=excluded.location, "
+        "city=excluded.city, state=excluded.state, is_remote=excluded.is_remote, salary=excluded.salary, "
+        "department=excluded.department, employment_type=excluded.employment_type, "
+        "description=excluded.description, posted_date=excluded.posted_date, "
+        "has_detail=excluded.has_detail, last_seen=excluded.last_seen",
+        (key, ats, j.get("apply_link"), j.get("location"), city, state, 1 if remote else 0,
+         j.get("salary"), j.get("department"), j.get("employment_type"), desc,
+         j.get("posted_date"), has_detail, seen_at))
+
+
+def _prune_detail_cache(started) -> int:
+    cutoff = (datetime.now() - timedelta(days=config.CACHED_JOB_TTL_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    with db.tx() as conn:
+        cur = conn.execute("DELETE FROM ats_detail_cache WHERE last_seen < ?", (cutoff,))
+        return cur.rowcount
 
 
 # --------------------------------------------------- per-user cache search ---
