@@ -101,7 +101,7 @@ def crawl_all_boards(workers: int = 16, enrich_workers: int = 24,
         # --- Phase A: gather state/remote stubs ---
         def _fetch(board):
             return board, link_resolver.fetch_board_for_cache(
-                board["ats"], board["slug"], target_name, target)
+                board["ats"], board["slug"], target_name, target, domain=board.get("domain"))
 
         stubs = []  # list of (board, jobdict)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:

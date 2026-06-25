@@ -624,7 +624,8 @@ _CXS_HEADERS = {"User-Agent": "Mozilla/5.0 (JobSearchAssistant link check)",
                 "Content-Type": "application/json"}
 
 
-def fetch_board_for_cache(ats: str, slug: str, state_name: str, state_code: str) -> list:
+def fetch_board_for_cache(ats: str, slug: str, state_name: str, state_code: str,
+                          domain: str = None) -> list:
     """Return cache-ready job dicts for `slug`. For the big partial-detail
     platforms this is pre-filtered to `state_name`/remote with an enrichment
     handle attached; for the rest it's the full detailed board."""
@@ -637,6 +638,10 @@ def fetch_board_for_cache(ats: str, slug: str, state_name: str, state_code: str)
             return _bamboohr_state_stubs(slug, state_code)
         if ats == "icims":
             return _icims_stubs(slug, state_code)
+        if ats == "adp":
+            return _adp_stubs(slug, state_code)
+        if ats == "successfactors":
+            return _sf_stubs(domain, state_name, state_code)
         return fetch_board_detailed(ats, slug)
     except Exception:
         log.debug("Cache fetch failed for %s/%s", ats, slug, exc_info=True)
@@ -793,9 +798,124 @@ def enrich_job(j: dict) -> None:
             _enrich_bamboohr(j, e)
         elif e.get("ats") == "icims":
             _enrich_icims(j, e)
+        elif e.get("ats") == "adp":
+            _enrich_adp(j, e)
+        elif e.get("ats") == "successfactors":
+            _enrich_sf(j, e)
     except Exception:
         log.debug("Enrich failed for %s", e.get("url"), exc_info=True)
     j.pop("_enrich", None)
+
+
+# ----------------------------------------------------------- ADP (WorkforceNow)
+# Public JSON job-requisitions API keyed by the cid we already have. The list
+# carries structured city/state; descriptions come from the per-job detail.
+
+def _adp_stubs(slug, state_code):
+    base = "https://workforcenow.adp.com/mascsr/default/careercenter/public/events/staffing/v1/job-requisitions"
+    data = _get_json(f"{base}?cid={slug}&timeZoneOffset=0&locale=en_US", timeout=15)
+    out = []
+    for r in (data or {}).get("jobRequisitions") or []:
+        city = state = None
+        remote = False
+        for loc in r.get("requisitionLocations") or []:
+            addr = (loc or {}).get("address") or {}
+            short = ((loc or {}).get("nameCode") or {}).get("shortName") or ""
+            if "remote" in short.lower() or "remote" in (addr.get("cityName") or "").lower():
+                remote = True
+            sc = _state_code((addr.get("countrySubdivisionLevel1") or {}).get("codeValue") or "")
+            if sc == state_code:
+                city, state = addr.get("cityName"), sc
+                break
+            if state is None:
+                city, state = addr.get("cityName"), sc
+        if state != state_code and not remote:
+            continue
+        item = r.get("itemID")
+        apply_link = (f"https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html"
+                      f"?cid={slug}&jobId={item}&lang=en_US&selectedMenuKey=CurrentOpenings")
+        row = _row(r.get("requisitionTitle"), apply_link,
+                   location=", ".join(p for p in (city, state) if p) or ("Remote" if remote else None),
+                   city=city, state=state, is_remote=remote,
+                   posted_date=(r.get("postDate") or "")[:10] or None)
+        if row:
+            row["_enrich"] = {"ats": "adp", "url": f"{base}/{item}?cid={slug}&timeZoneOffset=0&locale=en_US"}
+            out.append(row)
+    return out
+
+
+def _enrich_adp(j, e):
+    data = _get_json(e["url"], timeout=15) or {}
+    d = data.get("jobRequisition") or data
+    raw = d.get("requisitionDescription") or d.get("description") or ""
+    if isinstance(raw, dict):
+        raw = raw.get("text") or raw.get("value") or ""
+    desc = _strip_html(raw)
+    if desc:
+        j["description"], j["has_detail"] = desc, True
+
+
+# --------------------------------------------------- SAP SuccessFactors (CSB)
+# Career-Site-Builder sites on a custom domain expose /search/ with a
+# server-side location filter; every result is therefore in-state. Descriptions
+# (and precise location) come from each job page's JSON-LD. Boards with only a
+# company code and no domain aren't reachable this way and are skipped.
+
+def _sf_stubs(domain, state_name, state_code):
+    host = host_of(domain if "://" in (domain or "") else "https://" + (domain or ""))
+    if not host:
+        return []
+    out, seen = [], set()
+    for startrow in range(0, 250, 25):
+        html = _fetch_html(f"https://{host}/search/?q=&locationsearch={state_name}&startrow={startrow}")
+        if not html:
+            break
+        found = 0
+        for m in re.finditer(r'href="(/job/[^"]+?/\d+/)"[^>]*>(.*?)</a>', html, re.S):
+            link = m.group(1)
+            title = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", m.group(2))).strip()
+            if not title or len(title) < 2 or link in seen:
+                continue
+            seen.add(link)
+            found += 1
+            row = _row(title, f"https://{host}{link}",
+                       location=state_name, state=state_code)  # locationsearch already filtered to state
+            if row:
+                row["_enrich"] = {"ats": "successfactors", "url": f"https://{host}{link}", "want": state_code}
+                out.append(row)
+        if found == 0:
+            break
+    return out
+
+
+def _enrich_sf(j, e):
+    html = _fetch_html(e["url"])
+    if not html:
+        return
+    want = e.get("want")
+    for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', html, re.S | re.I):
+        try:
+            data = json.loads(m.group(1).strip())
+        except (ValueError, TypeError):
+            continue
+        for o in _iter_jsonld(data):
+            t = o.get("@type")
+            if t == "JobPosting" or (isinstance(t, list) and "JobPosting" in t):
+                _apply_jobposting(j, o, want)
+                if j.get("has_detail"):
+                    return
+    # HTML fallback: the CSB description lives in .jobdescription
+    m = re.search(r'class="jobdescription"[^>]*>(.*)', html, re.S)
+    if m:
+        seg = m.group(1)
+        for marker in ("Nearest Major Market", "Job Segment", 'class="apply', "Apply Now", 'class="jobShare'):
+            i = seg.find(marker)
+            if i > 200:
+                seg = seg[:i]
+                break
+        desc = _strip_html(seg[:20000])
+        if desc:
+            j["description"], j["has_detail"] = desc, True
 
 
 def _enrich_workday(j, e):
